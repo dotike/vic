@@ -1,0 +1,16 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Saves death by 1000 cuts,
+*~
+.DS_Store
+*.swp
+*.swo
+*.swn
+
+# make and build tooling,
+build/
+var/
+tmp/
