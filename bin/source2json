@@ -1,0 +1,42 @@
+#!/bin/sh
+
+# usage:
+#
+#  source2json /path/to/shell-style.conf
+  
+# Take a shell style configuration file with lines like:
+#   foo="Bar"
+# and output simple json with the values.
+#
+# Original intent:
+# This can be put into /etc/ansible/facts.d/bootstrap.fact
+# and be set to read the bootstrap file so the variables
+# are easily accessible to Ansible
+#
+# Bugs:
+# The "sed, tr, sed" pipeline exec's 3 times, because, JSON newlines.
+# If this proves non performant, do yourself the favor of taking
+# a moment to do the job with one awk statement.
+
+yell() { echo "$0: $*" >&2; }
+die() { yell "$*"; exit 111; }
+try() { "$@" || die "cannot $*"; }
+
+stripconfig() {
+# input: config file as function argv1
+# output: config file lines stripped of,
+#  - empty lines
+#  - non-param lines (no "=" char)
+#  - comment lines (starting with "^#")
+try grep '=' "${1}" | try grep -v '^#' \
+  | while read -r line ; do
+    echo "${line}"
+  done
+}
+
+stripconfig "${1:?ERROR: You must supply the path to a shell style configuration file.}" \
+  | try sed 's/=/":/;s/\(.*\)/\"\1,/' \
+  | try tr -d '\n' \
+  | try sed 's/,$//;s/\(.*\)/\{\1\}/'
+
+true

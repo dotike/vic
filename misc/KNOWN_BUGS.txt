@@ -1,0 +1,18 @@
+TODO: Bugs which annoy, but are not show-stoppers:
+
+vic-destory: commonly fails at VPC deletion stage for unknown reasons, (deletes just fine from the AWS console, and VIC error message gives you the url and instructions to go check there).
+
+.pyc files - vic library/tooling currently does not generate .pyc files, making initial development easier.  Remove this when buttoning up a proper software installer.
+
+validate_subnet_id() has some wonky string handling logic bug, almost a show-stopper but not yet.  Around line 580 in vic lib.
+
+'vic create -h', help fails unless AWS api account is setup and functional.  Need to move global variable instantiation into function and declare globals to ensure help works regardless of aws api setup for a user.
+
+when we run out of available vic names or networks, (stored in dns from vic-init), vic-create fails with a junky error.  Needs to error out with a simple message that we have no more available names, (likely just a quick try block wrapping whatever empty result we get).
+
+doctest tests are hozed, few of the AWS objects exist, and it's a real chicken/egg to mock them and meet actual testing goals.  Leaving them in for now until we figure out how to deal with them, (ike has some ideas on how to use the tool to generate the mocks, but of course, schrodegers cat is dead...)
+
+data payload returns should really scrub the AWS tags and inject them into main dict.  This would afford a *ton* of less clumsy handling for simple vic name handling, for example.  (implement 'TagSane' processing using aws_tags_dict() in vic lib).
+
+The AWS API for SQS limits the 'list_queues()' method call to 1000 items in the response, and does not provide a paginator, (can_paginate() and get_paginator() do not support list_queues()).  VIC library method list_sqs_queues() must use list_queues(), and currently a warning message is printed to stderr when 1000 or more items are returned by list_queues().
+

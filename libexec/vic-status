@@ -1,0 +1,43 @@
+#!/usr/bin/env python
+'''
+{myname TODO header string} -- Needs Description.
+'''
+# @depends: boto3, python (>=2.7)
+__version__ = '0.1'
+__author__ = 'Isaac (.ike) Levy <ike@blackskyresearch.net>'
+
+import os
+import sys
+import boto3
+import vic
+
+description="Reports on state of online/running VIC."
+dothere = os.path.dirname(os.path.normpath(sys.argv[0]))
+myhier = os.path.dirname(dothere)
+vic_conf= vic.source(str(myhier + '/etc/vic.conf'))
+
+if description is "":
+    description = "No description yet." 
+_me = os.path.basename(sys.argv[0])
+_me_cmd = _me.split('-', 1)[1]
+_desc="""
+  {_me_cmd} - {description}
+"""
+try:
+    if _exit is None:
+        _exit = 0
+except:
+    _exit = 0
+try:
+    if _fdout is None:
+        if _exit == 0:
+            _fdout = sys.stdout
+        else:
+            _fdout = sys.stderr
+except:
+    _fdout = sys.stdout
+
+
+print >> _fdout, _desc.format(_me_cmd=_me_cmd, description=description,)
+
+sys.exit(_exit)

@@ -1,0 +1,25 @@
+#!/bin/sh
+
+# simple dev tool, to print correct PATH, to work in an offbeat hier(7)
+#
+# example usage:
+#   $ export "`./devexport`"
+
+debug() { fd="${fd:-2}";[ -n "$DEBUG" ] && echo "$*" >&${fd}; }
+
+## vars
+
+_program_name="example"
+
+dothere=$(cd "${0%/*}" 2>/dev/null; echo "`pwd -L`")
+  debug "# dothere=${dothere}"
+myhier="${dothere%/*}"
+  debug "# myhier=${myhier}"
+
+## action
+
+if [ ! `which "${_program_name}"` ] ; then
+  echo "PATH=${myhier}/bin:${myhier}/sbin:$PATH"
+fi
+
+true

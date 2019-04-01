@@ -1,0 +1,200 @@
+#!/bin/sh
+
+# A time-worn combinator pattern program.
+# Reliably calls sub-programs with correct semantics as though
+# the sub-programs were being called on their own.
+# I ♥  UTF8, 若田
+
+shout() { echo "$0: $*" >&2; }
+die() { shout "$*"; exit 111; }
+try() { "$@" || die "cannot $*"; }
+
+debug() { fd="${fd:-2}";[ -n "$DEBUG" ] && try echo "$*" >&${fd}; }
+chirp() { echo "$*" >&2; }
+
+usage() {
+# print brief command line usage
+fd="${fd:-2}" # stderr
+ec="${ec:-5}" # Input/output error
+try cat - 2>&$fd << EOF
+usage: ${self##*/} command [args]
+       ${self##*/} [-v|d|D] [-V  [-h]
+EOF
+}
+
+summary_usage() {
+# accepts 1 user message as string
+fd="${fd:-2}" # stderr
+ec="${ec:-5}" # Input/output error
+command_list="`list_commands`"
+try cat - 2>&$fd << EOF
+`usage`
+
+These are common ${self##*/} commands used in various situations:
+
+working with VICs
+   config-admin Configure AWS auth specifically for VIC tooling.
+   create       Create a VIC from scratch.
+   destroy      Hierarchically destroy a VIC.
+
+information tools
+   test-aws     Validation for userconnectivity and IAM group/role permission.
+   list         No 'description' given.
+
+start from scratch, (fresh AWS account)
+   init         Initalize AWS account for VIC use, (a one time annoyance).
+
+'${self##*/} help' lists every available subcommand, and complete VIC overview.
+Try '${self##*/} <command> -h' for more information on a specific command.
+EOF
+[ -n "$1" ] && printf "\n${1}\n"
+exit "$ec"
+}
+
+callsubprog() {
+# expects to pass $@ from calling program,
+# compares $1 (named sub-command) to actual libexeec
+subpath="${myhier}/libexec/${self##*/}-${1}"
+debug "# sub-program path: ${subpath}"
+if [ -r "${subpath}" ] ; then
+  debug "# ${subpath} $@"
+  shift
+  debug "## ${subpath} $@"
+  "${subpath}" "$@"
+  subexit="${?:-0}"
+  exit "$subexit"
+else
+  echo "${self##*/}: '${1}' is not a ${self##*/} command.  See '${self##*/} -h'." 1>&2
+  exit 1
+fi
+}
+
+list_commands() {
+for i in `find ${myhier}/libexec -type f -depth 1 | sort` ; do
+  _prog="`basename ${i}`"
+  echo "${_prog#*-}" | pr -t -o 2
+  _desc="`grep '^description=' ${i} | head -n 1 | sed 's/^description=//;s/[ \t]*$//' | sed 's/^[\"]*//;s/[\"]*$//'`"
+  echo "${_desc:-No 'description' given.}" | fold -sw 70 | pr -t -o 10
+  echo
+done
+}
+
+octalperms() {
+# given a file path, returns octal file string
+if [ -e "${1}" ] ; then
+  try stat -r ${1} | awk '{print $3}' | sed 's/^.*\(.\{4\}\)$/\1/'
+fi
+}
+
+localpermscheck() {
+# Checks if private permissions are kosher,
+# Expects file path as arguement.
+_perms_private_config="`octalperms ${1}`"
+if [ ! ${_perms_private_config} = 0600 ] ; then
+  chirp "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@"
+  chirp "@        WARNING: UNPROTECTED PRIVATE CONFIG FILE!        @"
+  chirp "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@"
+  chirp "Permissions ${_perms_private_config} for '${1}' are too open."
+  chirp "It is required that your private auth files are NOT accessible by others, e.g., 0600."
+  die "Aborting."
+fi
+}
+
+argproc() {
+# special arg processing to know if the args are for us,
+# or if we pass them along to a sub-program
+if [ "`echo "${1}" | try cut -c1`" = '-' ] ; then
+  # treat args local 
+  debug "# not calling sub-program first flag starts with '-': ${1}"
+  debug "# args: $@"
+
+while getopts 'hvdVDdFb:z:' opt; do
+case "$opt" in
+v|d) echo "${self##*/}: -v flag not supported, set DEBUG in env instead, e.g.:" 1>&2
+   echo "	# DEBUG=1 ${self##*/} [args...]" 1>&2
+   echo "" 1>&2
+;;
+D) unset VERBOSE ; unset DEBUG
+;;
+V) debug "${version}" ; echo "${version}"
+;;
+h) usage ; exit "${ec:-0}"
+;;
+*) usage ; exit "${ec:-1}"
+;;
+esac
+done
+shift $((OPTIND - 1))
+
+else
+  # pass args and use sub-program
+  callsubprog "${@}"
+  for i in "$@" ; do
+    debug "# arg: ${i}"
+  done
+fi
+}
+
+
+## vars
+
+# Ubuntu is a toy, no POSIX and 'realpath(1)'
+if [ -h "${0}" ] ; then
+  self="`readlink -f "$0"`"
+else
+  self="${0}"
+fi
+  debug "self=${self}"
+
+version="${self##*/}_0.1"
+export "VERSION=${version}"
+
+# TODO: a dev shim,
+export PYTHONDONTWRITEBYTECODE=1
+
+[ -n "$DEBUG" ] && VERBOSE=1
+  debug "# VERBOSE=${VERBOSE}"
+
+dothere=$(cd "${self%/*}" 2>/dev/null; echo "`pwd -L`")
+export DOTHERE="${dothere}"
+  debug "# dothere=$dothere"
+myhier="${dothere%/*}"
+export MYHIER="${myhier}"
+  debug "# myhier=$myhier"
+
+# source local program config explicitly inside any program which needs it,
+debug "# sourcing ${myhier}/etc/${self##*/}.conf"
+. "${myhier}/etc/${self##*/}.conf"
+# one big exception for VIC tooling, unified TMPDIR acros *NIX platforms,
+TMPDIR="${TMPDIR:-/tmp}"
+export "TMPDIR=${TMPDIR}"
+
+# This is private config data, there is no room to muck about with
+# PATH style searching here- so, location non-negotiable:
+vic_local_config_dir="${HOME:?Something is very wrong.}/.vic"
+  debug "vic_local_config_dir=${vic_local_config_dir}"
+aws_private_config="${vic_local_config_dir}/aws_private.conf"
+  debug "aws_private_config=${aws_private_config}"
+
+if [ -r "${aws_private_config}" ] ; then
+  debug "# sourcing local, ${aws_private_config}"
+  localpermscheck "${aws_private_config}"
+  try . "${aws_private_config}"
+  debug "# config ${1} does not exist or is not readable by user: `id`"
+fi
+
+export "AWS_ACCESS_KEY_ID=${VIC_AWS_ACCESS_KEY_ID}"
+export "AWS_SECRET_ACCESS_KEY=${VIC_AWS_SECRET_ACCESS_KEY}"
+export "AWS_DEFAULT_REGION=${VIC_AWS_DEFAULT_REGION:-$aws_default_region}"
+
+
+## action
+
+debug "##############################################################################"
+# print usage if no args
+[ 0 -lt $# ] || summary_usage
+
+debug "# ${self##*/} $@"
+argproc "$@"
+
+exit 0

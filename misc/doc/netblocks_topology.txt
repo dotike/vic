@@ -1,0 +1,224 @@
+# This file descirbes various levels netblock organization,
+# covering all major components of a VIC, organized hierarchically.
+#
+# While many AWS specific terms may be used, the topology conforms to any
+# infrastructure foundation, including bare metal and alternative public
+# cloud providers.  Without special consideration, the design and
+# reservations should stay infrastructure agnostic.
+#
+# What follows aims to be a trivially parsable description of each element of
+# VIC structure, using example netblocks and names.  This serves to provide
+# diagram generation etc..., but can be trivially condensed, for example,
+#  $ grep -v '^#' netblocks_topology.txt | grep .
+#
+# Throughout, several examples refer to a browser based subnet calculator,
+# which is provided in this repo, vic:/misc/net/cidr_calc/subnets.html
+# Simply opening this file in a web browser allows you to use this tool,
+# and view the examples listed.
+#
+##############################################################################
+
+# Current implementation incorporates 4 VPC subnets:
+#   1) "WAN" (aka DMZ) Subnet, containing the IGW for a given VIC.
+#   2) "base" Subnet, containing vic-base instances and services.
+#   3) "Core" Subnet, hosts and services subnet. 
+#   4) "Data" Subnet, data layer services and hosts.
+#
+# These 4 VPC subnets are described in more detail in the sections below.
+
+##############################################################################
+# Summary Netblock Map, One VIC, Usable Netblock Reservations
+
+# Type Subnet          Hosts USE-Description
+# hard 10.254.0.0/17      32766 Entire VIC VPC
+# none 10.254.128.0/17    32766 dead half block, reserved for any future redesign
+#
+## soft 10.254.0.0/21     2046  PLUMBING.  WAN, base, subnets and soft assignments.
+### soft 10.254.0.0/29    6     IGW main routing block, DMZ subnet gateway_hardset
+### soft 10.254.0.8/29    6     DMZ Subnet, base plumbing_net 
+### soft 10.254.0.16/28   14    unused plumbing
+### soft 10.254.0.32/27   30    unused plumbing
+### hard 10.254.0.64/26   62    base_net, vic plumbing applications and services 
+### soft 10.254.0.128/25  126   unused plumbing 
+### soft 10.254.1.0/24    254   
+### soft 10.254.2.0/23    510
+### soft 10.254.4.0/22    1022
+#
+## hard 10.254.8.0/21     2046  reserved, subnet
+## hard 10.254.16.0/21    2046  reserved, subnet
+## hard 10.254.24.0/21    2046  reserved, subnet
+## hard 10.254.32.0/21    2046  reserved, subnet
+## hard 10.254.40.0/21    2046  reserved, subnet
+## hard 10.254.48.0/21    2046  reserved, subnet
+## hard 10.254.56.0/21    2046  reserved, subnet
+## hard 10.254.64.0/21    2046  reserved, subnet
+## hard 10.254.72.0/21    2046  reserved, subnet
+## hard 10.254.80.0/21    2046  reserved, subnet
+## hard 10.254.88.0/21    2046  reserved, subnet
+## hard 10.254.96.0/21    2046  reserved, subnet
+## hard 10.254.104.0/21   2046  reserved, subnet
+#
+## hard 10.254.112.0/21   2046  "Data" Layer Subnet
+### soft 10.254.112.0/29   6    gateway, subnet for gateway
+### soft 10.254.112.8/29   6    plumbing reserved
+### soft 10.254.112.16/28  14   plumbing reserved
+### soft 10.254.112.32/27  30   plumbing reserved
+#
+## hard 10.254.120.0/21   2046  "Core" Application Subnet 
+### soft 10.254.120.0/29   6    gateway, subnet for gateway
+### soft 10.254.120.8/29   6    plumbing reserved
+### soft 10.254.120.16/28  14   plumbing reserved
+### soft 10.254.120.32/27  30   plumbing reserved
+
+# Detailed explanation of this summary follows.
+##############################################################################
+
+
+
+# Top Level Domain
+# Internal TLD for all VICs, there is only one.
+# These are explicitly *not* internet TLD's, but are instead only internal
+# domains.  From inside of any VIC, (actual, or VPN endpoint connection),
+# this Route53 TLD can be queried for DNS records in the entire .vic
+# universe.  Measures are taken to ensure DNS record writes for a given
+# VIC, can only be made from inside a given VIC domain.
+tld=vic
+
+# Internal domain name for a VIC
+# Predetermined names which conform to the rules set in rfc3490 for label
+#  parts of domain names, (the parts between dots).  Since this is
+# unicode, underscores are allowed.  Additional rules are as follows:
+#  - each VIC name must be unique for an org
+#  - name batches must be pre-generated to avoid ad-hock nomenclature problems
+#  - each VIC name must be <=32 unicode characters
+# Pre-generated names are to be used, see vic_512_names.txt in this repo.
+# DNS/Route53 'writes' for a given domain can only happen from
+# inside that domain.  Yet, domains for all org VIC's can be
+# queried from inside *any* VIC network.
+domain=hot_latte
+
+# Every named host and network endpoint can now bear this name,
+vic_fqdn="${domain}.${tld}"
+
+# AWS Region
+# There can only be one, VPC's can only exist in one AWS Region,
+# analogous to a POP.
+aws_region=us-west-1
+
+# AWS Availability Zones
+# Predetermined list of availability zones, colon separated.
+az="${aws_region}a:${aws_region}b"
+
+# VPC Netblock, aka 'superblock', aka 'network'
+# Predetermined netblocks from the 10/8 RFC1918 specification.
+# 192.168/16 and 172.16/12 prefixed networks belong to IT for
+# offices and other uses.
+# Correlates to entire domain name for a VIC.
+# Maximum IPv4 usable addresses per /16: 65534
+# http://../net/cidr_calc/subnets.html?network=10.0.0.0&mask=8&division=511.ff46272397239399c7239399c399c9c4e7239399c399c9c4e399c9c4e9c4e462f7239399c399c9c4e399c9c4e9c4e462f399c9c4e9c4e462f9c4e462f4627231
+domain_netblock="10.254.0.0/16"
+
+# Divide the VPC netblock, reserving half for complete architectural change.
+# http://../net/cidr_calc/subnets.html?network=10.254.0.0&mask=16&division=3.1
+usable_netblock="10.254.0.0/17"
+reserved_half_netblock="10.254.128.0/17"
+
+##############################################################################
+# SUBNETS
+
+# "WAN" Subnet, aka "Gateway netblock", aka "DMZ netblock" 
+# Required for internet inbound egress.
+# A /22 subnet from the domain_netblock, 1023 available IP's.
+# Only one VPC subnet can be configured with access to Elastic IP's, or
+# Internet-facing ELB's.  Edge devices can pick up network interfaces
+# in this network, including internet-routable EIP's.
+# Always the first /22 from the network /17, therefore the last
+# two octets are always start with 0.0 for this /17'
+# This network may never contain any hosts, yet, bastion hosts or other
+# internet-only hosts may be small exceptions here.
+wan_netblock="10.254.0.0/22"
+
+# "base" Subnet
+# A /21 subnet from the domain_netblock, 1023 available IP's.
+# Contains all "core" infrastructure services, which must be provisioned
+# during the VIC bootstrap, and are typically accessible to all networks
+# except any which may originate from hosts solely in the gateway network.
+# Services which may be included here are:
+#  - provisioning (cfengine)
+#  - syslog relay(s)
+#  - smtp relay(s)
+#  - core cron services
+#  - ntpd relay (or AWS internal endpoint)
+#  - centralized file services (or AWS internal endpoint)
+#  - VPC endpoints for various services,
+#    - Org-global VIC S3 buckets
+#    - RDS Instances
+core_svcs_netblock="10.254.0.0/22"
+
+# "Core" Subnet, hosts and services subnet. 
+# *All* application hosts.
+# The list is too large for this document, but every host currently
+# deployed via CFEngine is to be launched here.
+
+# "Data" Subnet, data layer services and hosts.
+# The data layer, we may as well split it off clean now.
+# This layer contains all data services, including:
+#  - RDS Database Endpoints
+#  - S3 Bucket Endpoint for Applications
+#  - Any Instances which contain Persistent Data
+
+##############################################################################
+# EACH SUBNET, SOFT ALLOCATIONS
+# A list of reserved IP's in each netblock, homogeneous, no exceptions.
+#
+# Using the visual subnet calculator,
+# http://../net/cidr_calc/subnets.html?network=10.254.0.0&mask=17&division=79.fff00462723ff10cf300
+
+# First soft /20, sliced up for base infrastructure.
+soft_base_inf="10.254.0.0/20"
+# First soft /27, always available from all hosts for network plumbing
+soft_plumbing="10.254.0.0/27"
+
+# Internal Gateway
+# Always using first address in usable range, part of first soft /29
+gateway_ipv4="10.254.0.1"
+#
+# Routers gateway_ipv4/29 "soft subnet" addresses for CARP/VRRP addresses,
+gateway_hardset="${gateway_ipv4}/29"
+#
+# "rpfg" Router Protocol For Gateway
+rpfg2=10.254.0.2
+rpfg3=10.254.0.3
+rpfg4=10.254.0.4
+rpfg5=10.254.0.5
+
+# plumbing hosts, networking reserved
+# next soft /29, usable for internal network services including:
+#  - VIC-Global VPN Endpoint
+#  - VIC-Global SSH bastion
+#  - VIC Information Services
+plumbing_net=10.254.0.8/29
+
+# core network, *last* /20 netblock 
+# Product subnets creep contiguous from the end of the VPC netblocks.
+# Through 2017 and for the foreseeable future, we won't break subnets
+# until we have hard requirements or needs to do so.
+core_net="10.254.112.0/20"
+
+# Available reserved networks
+unused_a="10.254.0.16/28"
+unused_b="10.254.0.32/27"
+unused_c="10.254.0.64/26"
+unused_d="10.254.0.128/25"
+unused_e="10.254.1.0/24"
+unused_f="10.254.2.0/23"
+unused_g="10.254.4.0/22"
+unused_h="10.254.8.0/21"
+
+unused_i="10.254.16.0/20"
+unused_j="10.254.32.0/20"
+unused_k="10.254.48.0/20"
+unused_l="10.254.64.0/20"
+unused_m="10.254.80.0/20"
+unused_n="10.254.96.0/20"
+

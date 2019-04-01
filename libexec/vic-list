@@ -1,0 +1,309 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*
+'''
+vic-list -- List vic VPC's across global regions.
+
+Use the help flag, 'vic destroy -h' for more info.
+'''
+
+# @depends: boto3, python (>=2.7)
+__version__ = '0.1'
+__author__ = 'Isaac (.ike) Levy <ike@blackskyresearch.net>'
+
+import os
+import sys
+import getopt
+import boto3
+import vic
+import json
+
+description="List vic VPC's across global regions."
+
+try:
+    vic_conf = vic.source(str(os.environ['MYHIER'] + '/etc/vic.conf'))
+    vic_tld = vic_conf['vic_tld']
+    info_domain = 'info.{}'.format(vic_tld)
+    _me = os.path.basename(sys.argv[0])
+    _cmd = _me.split('-', 1)[1:][0]
+except Exception as err:
+    raise type(err)('{0}: {1}'.format(sys.argv[0], err))
+
+def usage(msg=None, _exit=1, _fdout=None):
+    '''
+    Usage with exit handling properties.
+
+    Args:
+        msg: string, optional user message to print
+        _exit: int as exit code
+        _fdout: can be sys.stderr or sys.stdout (or other fd)
+
+    Returns:
+        help message text block
+        will exit program
+    '''
+    _desc = """
+{myname}
+
+  {description}
+  Version {version}.
+
+  This utility requires that a given AWS account has been initialized for use,
+  please see 'vic init' for further information on AWS account initialization.
+  This utility also operates on one configured AWS account at a time, see
+  'vic config-admin' to set up access to your account.
+
+usage:
+
+  {myname}
+  {myname} [-p] <vicname>
+  {myname} [-v] [-y] [-j] [-s] [-p] <vicname>
+  {myname} [-h]
+
+When called without arguments, a list containing basic details for
+every live vic is returned.
+
+arguments:
+
+  -p <vicname>
+     A specific user-defined vicname.  This name cannot
+     be arbitrary, but must correspond to a live vic name.
+     Can be in the format 'vic_name' or 'vic_name.tld'.
+
+  -j  Output json for information output.
+      Note: this is the cleanest way to output all information.
+
+  -J  Same as '-j' json, but will pretty-print json output.
+
+  -s  Short list, only return active vic names.
+
+  -y  Yes to all questions, accepting default values.
+
+  -v  Verbose, prints human-centric output to stderr.
+
+  -h  Print this help to stdout, and exit zero.
+"""
+    if _fdout is None:
+        if _exit == 0:
+            _fdout = sys.stdout
+        else:
+            _fdout = sys.stderr
+
+    print >> _fdout, _desc.format(myname=os.path.basename(sys.argv[0]),
+                                  version=__version__, description=description)
+    _fdout.flush()
+    if msg is not None and msg is not '':
+        print >> _fdout, '\n' + str(msg)
+        _fdout.flush()
+    sys.exit(_exit)
+
+
+def vprint(prettymuchanything='', fd=sys.stderr):
+    '''
+    If verbose mode is set, Prints just about anything to screen.
+
+    Args:
+      prettymuchanything - Usually strings, but just about any python object.
+      Operates on parent context var 'verbose', or ENV 'VERBOSE'.
+
+      fd - file descriptor out, usually 'sys.stderr' or 'sys.stdout'
+         Does not force this file descriptor if program is already redirecting.
+
+    Returns:
+      Returns nothing.
+      Print out put if either:
+         - 'verbose' exists and is not none
+         - ENV var 'VERBOSE' exists and is not none.
+    '''
+    try:
+        if os.environ['VERBOSE']:
+            print >> fd, "# {}".format(str(prettymuchanything))
+        elif verbose:
+            print >> fd, "# {}".format(str(prettymuchanything))
+    except:
+        pass
+
+def yes_no():
+    '''
+    Process a yes/no answer from user input,
+    return True/False, die on bad input.
+    '''
+    try:
+        if pconf.yestoall:
+            vprint("-y yes to all, proceeding without user input.")
+            return True
+
+        user_choice = raw_input()
+        if user_choice.lower() in ['y', 'yes']:
+            return True
+        elif user_choice.lower() in ['n', 'no']:
+            print "Aborting, you can try again any time."
+            return False
+        else:
+            vic.die("Bad input, you can try again any time.")
+
+    except Exception as err:
+        raise type(err)(
+            'yes_no() error: {}'.format(err))
+
+def _loadconfig():
+    '''
+    Loads config needs from files and API calls.
+
+    Args: none.
+    Requires vic configDict object 'pconf', which we add to.
+
+    Returns: That depends on the command line options given.
+    If verbose flag is thrown to program, variables are printed
+    after they are set.
+    '''
+    vprint("processing _loadconfig()")
+
+    for key, val in vic.source(str(os.environ['MYHIER'] + '/etc/vic.conf')).iteritems():
+        vprint("{0}='{1}'".format(key, pconf.alt_set(key, val) ))
+
+    vprint("{0}='{1}'".format('info_domain', pconf.alt_set(
+        'info_domain', 'info.{}'.format(pconf['vic_tld']) )))
+
+    vprint("{0}='{1}'".format('vic_classes', pconf.alt_set(
+        'vic_classes', pconf['vic_class_types'].strip().split(' ') )))
+
+    #pconf['consoleurl'] = "https://{0}.signin.aws.amazon.com/console".format(
+    #    vic.fetch_account_id()[0])
+    #vprint("consoleurl='{}'".format(pconf['consoleurl']))
+
+def column(instring):
+    '''
+    Use column(1) to format columnar text output.
+
+    Args: instring - a string, typically multi-line text.
+
+    Returns: column-formatted version of instring.
+    '''
+    try:
+        from subprocess import Popen, PIPE, STDOUT
+
+        if not instring.endswith('\n'):
+            instring = instring + '\n'
+
+        col = Popen(['column', '-t'], stdout=PIPE, stdin=PIPE, stderr=STDOUT)
+        col_stdout = col.communicate(input=instring.encode())[0]
+        return col_stdout.decode().strip('\n')
+
+    except Exception as err:
+        raise type(err)('column() error: {}'.format(err))
+
+
+def _return_vics():
+    '''
+    Wraps vic library call.
+    '''
+    # simple list default, vic-name, class, region, vpc_id
+    # long format, for reading all detail on single line
+    #   - similar header to ps(1) output
+    # short list of vpc-id only
+    # short list of vic-name only
+
+    try:
+        raw_return = vic.list_vics(vic_id=pconf['vic_name'])
+    except:
+        raw_return = {}
+
+    if raw_return:
+
+        if pconf['jsonpretty']:
+            return json.dumps(raw_return, indent=4, sort_keys=True)
+        elif pconf['jsonout']:
+            return json.dumps(raw_return, sort_keys=True)
+        elif pconf['shortout']:
+            names_list = []
+            for vic_id, pdict in raw_return.iteritems():
+                ptags = vic.aws_tags_dict(pdict['Tags'])
+                vic.upsert_list(names_list, ptags['Name'])
+            names_list.sort()
+            return '\n'.join(names_list)
+        else:
+            #vic.prettyPrint(raw_return)
+            for vic_id, pdict in raw_return.iteritems():
+                ptags = vic.aws_tags_dict(pdict['Tags'])
+                vicline = "{0}\t{1}\t{2}\t{3}\t{4}".format(
+                ptags['Name'],
+                ptags['vic_class'],
+                pdict['region'],
+                pdict['VpcId'],
+                pdict['CidrBlock'],
+                )
+                pconf['format_return'] = pconf['format_return'] + '\n' + vicline
+            return column(pconf['format_return'])
+
+    else:
+        try:
+            pconf['consoleurl'] = "https://{0}.signin.aws.amazon.com/console".format(
+                vic.fetch_account_id()[0])
+            vprint("consoleurl='{}'".format(pconf['consoleurl']))
+        except:
+            vic.die("No VIC VPCs appear to exist for this account. {}".format(pconf['consoleurl']))
+
+    sys.exit(1) # we should not make it here.
+
+
+def main(argv):
+    '''
+    Handles command line input.
+
+    Args: argv
+
+    Returns: That depends.  -h for usage/help.
+    '''
+    try:
+        try:
+            opts, args = getopt.getopt(argv, 'jJvhysp:')
+            for flag, opt in opts:
+                if flag == '-v':
+                    global verbose
+                    os.environ['VERBOSE'] = 'True'
+                    vprint("processing argv: {}".format(argv))
+                elif flag == '-h' or flag == '--help':
+                    usage('', 0)
+                    sys.exit(0)
+                elif flag == '-y':
+                    pconf['yestoall'] = True
+                    vprint("yestoall='{}'".format(pconf['yestoall']))
+                elif flag == '-s':
+                    pconf['shortout'] = True
+                    vprint("shortout='{}'".format(pconf['shortout']))
+                elif flag == '-j':
+                    pconf['jsonout'] = True
+                    vprint("jsonout='{}'".format(pconf['jsonout']))
+                elif flag == '-J':
+                    pconf['jsonpretty'] = True
+                    vprint("jsonpretty='{}'".format(pconf['jsonpretty']))
+                elif flag == '-p':
+                    pconf['vic_name'] = opt
+                    vprint("vic_name='{}'".format(pconf['vic_name']))
+
+            _loadconfig()
+            print _return_vics()
+
+        except (getopt.GetoptError, RuntimeError, TypeError, NameError) as err:
+            raise ValueError(err)
+
+    except Exception as err:
+        raise type(err)('{0} main(): {1}'.format(sys.argv[0], err))
+    sys.exit(0)
+
+# Initialize variables which do not have external data dependencies,
+# e.g. don't make api calls or load config files.
+try:
+    pconf = vic.configDict()
+    _me = os.path.basename(sys.argv[0])
+    _cmd = _me.split('-', 1)[1:][0]
+    try:
+        if os.environ['TMPDIR']:
+            TMPDIR=os.environ['TMPDIR']
+    except:
+        TMPDIR='/tmp'
+except Exception as err:
+    raise type(err)('{0}: {1}'.format(sys.argv[0], err))
+
+if __name__ == '__main__':
+    main(sys.argv[1:])

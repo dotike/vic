@@ -1,0 +1,545 @@
+#!/bin/sh
+
+# This program will send an SQS message requesting that an instance's DNS
+# CNAME record be updated to its current public hostname.
+#
+# This program is documented in it's help, please run:
+#
+#   $ thisprogram -h
+#
+# This program must be installed and run early, by the our host bootstrap.
+#
+
+yell() { echo "$0: $*" >&2; }
+die() { yell "$*"; exit 111; }
+try() { "$@" || die "cannot $*"; }
+
+chirp() { fd="${fd:-2}";[ "$verbose" ] && try echo "# $*" >&${fd}; }
+hostlogger() { try logger -t ${0##*/} "${instance_id}:${local_ip}:$0: $*"; chirp "${*}"; }
+
+debug() { fd="${fd:-2}";[ -n "$DEBUG" ] && try echo "## $*" >&${fd}; }
+
+usage() {
+# accepts 1 optional user message as string
+# does not print help block if -s flag is thrown
+  fd="${fd:-2}" # stderr
+  ec="${ec:-5}" # Input/output error
+  if [ ! "$nohelp" ] ; then
+try cat - 2>&$fd << EOM
+
+${0##*/} -- set DNS from a host
+
+  usage:
+       ${0##*/}
+       ${0##*/} [-h|V] [-v|s] [-p|P] [-N hostname] [-c] [-L] [-f]
+
+  The ${0##*/} utility requests DNS names set for the host from
+  where it is run.
+
+  This utility also allows for arbitrary names to be requested in DNS.
+
+  This utility does *not* currently allow for arbitrary IP addresses to
+  be assigned to a DNS entry, our current AWS EC2 Classic enviornment
+  makes this too dangerous to implement.
+
+  When run without arguements, this utility requests all names which were
+  configured during bootstrap runs, based on variables found in
+  /etc/myenviornment/bootstrap.conf.
+
+  Default behavior is silent operation, this utility is mostly called via cron.
+  Also default behavior, this utility logs it's run in syslog on the host from
+  which it is run.
+
+  The domain name posted is divined through somewhat complex means:
+
+  First, this program asks the AWS API for it's DNS name in metadata, and
+  chops it apart for re-submission to SQS.  This is done because of reboots-
+  the IP(s) of the host may have changed, so this is a stable way for the host
+  to re-discover it's own domain name.
+  Next, if that lookup fails to produce any domain "parts" because the name
+  was never set in the first place, the host will coerce the parts it needs
+  from other base system config done during bootstrap.  resolv.conf domain
+  config is used for the internal TLD part, and the local hostname (minus TLD) 
+  is prepended to it.
+
+  If all that fails, arbitrary hostnames can be requested via the -N flag,
+  described below.
+
+  This utility is intended to operate idemvicently, and can therefore be
+  run at any time.  Queries are submitted to an SQS queue, and other programs
+  pull regularly from the queue and push the changes to Route53.  This
+  indirection, (an extra stage for requests), is to overcome the relative
+  unreliablity of making Route53 API calls- and make this program operate
+  as reliably as possible.
+
+  Therefore, after this utility is run, it can take several minutes for
+  DNS requests to become live on DNS servers.  Additionally, DNS caching
+  and TTL propogation may make updates take more time to be reached
+  by name on the network.
+
+  Noteworthy, some org roles set a touchfile 'no_register_dns', which,
+  prevents this program from registering itself in DNS.  The -f flag
+  allows you to force an override, please use -f force with caution.
+
+  This program is installed and used during org system bootstrap
+  operations, and on most hosts, is never run again.
+
+  Timeout values defaults have been set to allow for this program to be run
+  minutely from cron, repeating failed attempts twice without any timeout
+  modification, and not stepping on itself with race condition timing: 
+  An example of minutely crontab use,
+
+      * * * * *  user  REPEAT=2 /path/to/${0##*/}
+
+  By default, this program writes a crontab which runs only on reboot,
+  but only if it does not exist in the first place.  This behavior can
+  be overridden using the -c flag.
+
+  For more infomation, read the ENV and ARGUEMENTS sections below.
+
+
+  ARGUEMENTS:
+      ${0##*/} can operate without no flags, silently, but will log to syslog.
+
+     -N  string
+           Force Name, will force the DNS request to use exactly the string
+           passed from this flag, and only the string passed from this flag.
+           Same use as PERC_FQDN ENV var, yet, this arguement always wins
+           if both are present.
+
+     -f    Force the request, disregarding 'no_register_dns' touchfile.
+
+     -c    Run without writing crontab, or checking for it's existence.
+
+     -L    Logging disabled, does not write activity message to syslog.
+
+     -v    Verbose, print relevant request information for interactive use.
+           Message ends with the the same line which goes to syslog.
+
+     -s    Silent operation, overrides verbose if they are both used.
+
+     -p    Print SQS message and exit, does not make an actual request,
+           useful for debugging.
+
+     -P    Prints SQS message to stdout, and makes the actual request.
+
+     -h    Explain what ${0##*/} does, (this text).
+
+     -V    Print the ${0##*/} version to stdout, and exit.
+
+
+  ENV:
+      The following ENV vars can modify program behavior, and can be
+      very useful for inline crontabs or other automation:
+
+      RETRIES=<int>
+        Number of times to retry posts, defaults to 1.
+
+      TIMEOUT=<int seconds>
+        Various network request timeout, defaults to 9 seconds.
+
+      RETRY_WAIT=<int seconds>
+        Idle wait between SQS retries, defaults to 9 seconds.
+
+      BOOTSTRAP_CONF=/path/to/nonstandard_bootstrap.conf
+        Override for default /etc/myenviornment/bootstrap.conf file.
+
+      PERC_TLD="internal.tld"
+        Internal org TLD.  Can be used to force use of a particular
+        domain.  Can be used when a host has not yet set DNS on the network.
+        Same behavior as -T arguement.
+
+      PERC_FQDN="full.host.name.with.internal.tld"
+        Full override to request from upstream.  DNS setting operation will
+        request explicitly just this name, (no more no less).  Same use
+        as the -N flag, but that interactive flag always wins if both are set.
+
+      DNS_TTL=<int seconds>
+        Override defaults for TTL, which currently defaults to 60 seconds
+        for most hosts and 300 seconds foo.tld hosts.
+
+      SQS_QUEUE_URL="https://api.url.tld/maybe/api/path/"
+        Default 'https://sqs.us-west-1.amazonaws.com/667005031541/dns_updates'.
+
+      SQS_REGION="string"
+        Default is 'us-west-1'.
+
+      AWS_METADATA_URL
+        Default is 'http://169.254.169.254/latest/meta-data/'
+
+      CRONTAB_FILE=/path/to/filename
+        Default file '/etc/cron.d/on_reboot_update_hostname_in_dns'.
+
+      TEMP_DIR="/some/path"
+        Override for default /tmp directory.
+
+      PERCOHIER=/path/to/myenviornment
+        Override for myenviornment base directory path, default '/myenviornment'.
+
+      RESOLV_CONFIG=/path/to/resolv.conf.d/base
+        Path to resolv.conf DHCP loader, (set by org bootstrap).
+        Default '/etc/resolvconf/resolv.conf.d/base'.
+
+      DEBUG="1"
+        Any value not empty or null will make this program spit out
+        debug tracing, (mostly variable setting checks).
+
+      AWS_CRED_FILE=/path/to/.aws/credentials
+        An alternative AWS cridentials file can be passed with this ENV
+        var, default for this program is to check /root/.aws/credentials
+
+
+  SEE ALSO:
+      resolv.conf(5), gethostbyname(3), resolver(3), hostname(7), named(8),
+      <https://github.com/myenviornment/doc/blob/master/teams/ops/dns.md>
+
+
+  BUGS:
+      This program is not portable across *NIX systems, and has a number of
+      Ubuntu-isms.  This program currently relies on AWS in intended operation,
+      but could be easily extended to function in any enviornment.
+      This help text should really be a man page.
+
+EOM
+  fi
+  [ -n "$1" ] && printf "\n${1}\n"
+  exit "$ec"
+}
+
+argproc() {
+# process command line args
+  while getopts 'N:T:F:fcpPLvsVh' opt; do
+  case "$opt" in
+  N) force_name="${OPTARG}"
+     # overrides ENV var 'PERC_FQDN'
+     no_set_addtional=1
+  ;;
+  T) PERC_TLD="${OPTARG}"
+     # not actually setting env, but leveraging ENV override below.
+  ;;
+  f) force_request="override_no_register_dns"
+  ;;
+  c) cron_bypass="do_not_write_cron"
+  ;;
+  p) print_request=1
+     do_not_request=1
+  ;;
+  P) print_request=1
+  ;;
+  L) _syslog="OFF"
+  ;;
+  v) verbose=1
+  ;;
+  s) unset verbose
+     nohelp=1
+  ;;
+  V) echo "${0##*/} ${version}" ; exit 0
+  ;;
+  h) ec=0 fd=1 usage
+  ;;
+  *) usage "FATAL: unknown arguements passed # ${0##*/} ${*}"
+  ;;
+  esac
+  done
+  shift $((OPTIND - 1))
+  debug "force_name=${force_name}"
+  debug "no_set_addtional=${no_set_addtional}"
+  debug "force_request=${force_request}"
+  debug "cron_bypass=${cron_bypass}"
+  debug "print_request=${print_request}"
+  debug "do_not_request=${do_not_request}"
+  debug "_syslog=${_syslog}"
+  debug "verbose=${verbose}"
+  debug "nohelp=${nohelp}"
+}
+
+cleanup() {
+# best effort to clean up after ourselves, don't use 3-finger here
+  chirp "Cleaning up."
+  [ -f "${_message_file}" ] && rm "${_message_file}"
+  [ -f "${_response_file}" ] && rm "${_response_file}"
+}
+
+request_dns_update() {
+# Makes an SQS request to set DNS record update.
+
+  # First, we'll ask AWS metadata, for AWS generated fqdn of the instance
+  _instance_hostname="`ask_aws public-hostname`"
+
+  _tmpwrite="`try mktemp ${_tmp}/${0##*/}.XXX`"
+  _message_file="${_tmp}/${0##*/}.dns_sqs_body.txt"
+  _response_file="`try mktemp ${_tmp}/${0##*/}.response.XXX`"
+
+  # TODO: see if we can't replace this with a heredoc and handle JSON ok?
+  # Build SQS message body for the DNS change request. We have to save the
+  # message body to a file since the AWS CLI is draconian when it comes to
+  # expanding variables inside a parameter (single-quotes are required).
+  # Basically, you can't expand variables inside --message-body.
+cat <<EOF > "${_tmpwrite}"
+{
+  "Domain": "${PERC_TLD:-$vic_tld}",
+  "Action": "UPSERT",
+  "Record": {
+    "Name": "${force_name:-$fqdn}",
+    "Type": "CNAME",
+    "TTL": "${dns_ttl}",
+    "Targets": ["${_instance_hostname}"]
+  },
+  "Source": {
+    "Program": "${0##*/}",
+    "Instance ID": "${instance_id}",
+    "Local IP": "${local_ip}"
+  }
+}
+EOF
+  try mv "${_tmpwrite}" "${_message_file}"
+  chirp "Writing message payload as ${_message_file}"
+  [ ${print_request} ] && try cat "${_message_file}"
+
+  # Now it's time to sling the message,
+  if [ ! "${do_not_request}" ] ; then
+    # Send a message to the dns_updates SQS queue requesting the DNS change
+    hostlogger "Requesting DNS update with SQS message..."
+
+    _repeat="${retry_count:-1}"
+
+    while [ ${_repeat} -gt 0 ] ; do
+      timeout ${timeout} aws \
+        --region "${dns_sqs_region}" \
+        sqs send-message \
+        --queue-url "${dns_sqs_queue}" \
+        --message-body "file://${_message_file}" >> "${_response_file}"
+      [ $? = 0 ] && break
+      _repeat="$((_repeat - 1))"
+      [ ${_repeat} -le 0 ] && break
+      hostlogger "SQS request failed, retrying in ${retry_wait} seconds..."
+      sleep "${retry_wait}"
+    done
+
+    if [ ${_repeat} -le 0 ] ; then
+      die "FATAL: failed ${retry_count} times to reach SQS, while requesting a DNS update: ${_instance_hostname}"
+    fi
+
+    # handle output line,
+    cat "${_response_file}" |
+    {
+      while read -r line ; do
+        _response_line="${_response_line} `echo ${line} | grep 'MD5OfMessageBody'` "
+        _response_line="${_response_line} `echo ${line} | grep 'MessageId'` "
+      done
+      hostlogger `echo "SQS Response: ${_response_line}" | column -t -s ' '`
+    }
+    if [ ${print_request} ] ; then
+      chirp "SQS Response:"
+      try cat "${_response_file}" 
+    fi
+  fi
+}
+
+request_if_additional_dns_configured() {
+# Request additionally configured dns CNAMES.
+# If a number of conditions are met, used to make an additional requests
+# for additional cname requests.
+
+# vars here are sourced from the ${bootstrap_conf} file in variable handling
+# section of this program.
+
+  debug "Used for additional name requests: domain_name=${domain_name}"
+
+  # set_role_dns, sets <role>.<tld> CNAME,
+  debug "Additional role based name: set_role_dns=${set_role_dns}"
+  if [ ! "${set_role_dns}" = "" ] \
+    && [ ! "`echo ${set_role_dns} | tr '[:upper:]' '[:lower:]' `" = "undefined" ] \
+    && [ ! "`echo ${set_role_dns} | tr '[:upper:]' '[:lower:]' `" = "none" ] \
+    && [ ! "`echo ${set_role_dns} | tr '[:upper:]' '[:lower:]' `" = "no" ] \
+    && [ ! "${instance_role}" = "" ] \
+    && [ ! "${domain_name}" = "" ] ; then
+
+    force_name="${instance_role}.${domain_name}"
+      debug "Additional role based name: force_name=${force_name}"
+    request_dns_update
+  fi
+
+  # add_role_cname, sets <add_role_cname>.<tld> CNAME,
+  debug "Additional role based name: add_role_cname=${add_role_cname}"
+  if [ ! "${add_role_cname}" = "" ] \
+    && [ ! "${add_role_cname}" = "none" ] \
+    && [ ! "${domain_name}" = "" ] ; then
+
+    force_name="${add_role_cname}.${domain_name}"
+      debug "Additional role based name: force_name=${force_name}"
+    request_dns_update
+  fi
+}
+
+install_crontab_reboot_hostname() {
+# checks to see if reboot crontab is in place
+# crontab purpose: correct for IP address changes in DHCP (aws) reboot
+#
+# The file dropped into /usr/local will likely not be disturbed by cfengine
+  if [ ! -f "${crontab_filename}" ] && [ ! "${cron_bypass}" ] ; then
+    hostlogger "${crontab_filename} does not exist, creating it now."
+
+cat - << EOF > "${crontab_filename:?FATAL: missing crontab_filename path}"
+# `date`
+# This config was most likely set during bootstrap operations by ${0##*/}
+# Makes sure that the hostname resolution is up to date after reboot,
+# in case the instance changed.
+@reboot root RETRIES=15 /usr/local/bin/update_hostname_in_dns
+EOF
+
+    try chmod 644 "${crontab_filename}"
+  fi
+}
+
+ask_aws() {
+# convienence for querying AWS metadata API
+# expects last URI method call as argv1, do not fail on bad output here.
+  curl -sf --connect-timeout 3 \
+    "${aws_meta_url}/${1:?FATAL: missing URI method for AWS meta-data API}"
+}
+
+oscheck() {
+# accepts multiple args, expects OS uname or /etc/*release* names,
+# This program was built run from our Ubuntu hosts, not tested on anything else:
+  for i in $@ ; do
+    if `cat /etc/os-release | grep "${i}" 2>&1 >> /dev/null` ; then
+      _supported=1
+      debug "_supported=${_supported}"
+    fi
+  done
+  [ "${_supported}" ] || ec=19 fd=1 usage "FATAL: host OS not yet supported, `uname` detected."
+}
+
+tld_check() {
+# Finds our bootstrap-dropped zone/tld name.
+# This logic supports some legacy edge cases.
+  hostlogger "Finding our internal TLD zone name."
+  if [ "${vic_tld}" = "" ] ; then
+    if [ -r "${resolv_config}" ] ; then
+      vic_tld="`grep -i 'domain' ${resolv_config} | awk '{print $NF}'`"
+    fi
+    if [ "${vic_tld}" = '' ] && [ -r "${vic_tld_file}" ] ; then
+      vic_tld="`try cat ${vic_tld_file}`"
+    fi
+    if [ "${vic_tld}" = '' ] ; then
+      _msg="ERROR: Cannot acquire internal tld via ${resolv_config} or ${vic_tld_file}"
+      hostlogger "${_msg}"
+      [ "${force_request}" = 'override_no_register_dns' ] || die "${_msg}"
+    fi
+  fi
+  hostlogger "Found our internal TLD zone name: ${vic_tld}"
+}
+
+
+## vars
+
+version='2.4'
+
+# pre arg processing default,
+unset verbose
+[ "${PERC_FQDN}" ] && force_name="${PERC_FQDN}" && debug "force_name=${force_name}"
+
+# broken out in case we need to pre-process any args before variable coersion,
+argproc "${@}"
+
+# safest to pre-check OS before coersing variables
+oscheck 'Ubuntu'
+
+_tmp="${TEMP_DIR:-/tmp}"
+  debug "_tmp=${_tmp}"
+myenviornment_dir="${PERCOHIER:-/myenviornment}"
+  debug "myenviornment_dir=${myenviornment_dir}"
+myenviornment_etc_dir="${myenviornment_dir}/etc"
+  debug "myenviornment_etc_dir=${myenviornment_etc_dir}"
+myenviornment_no_register_dns_file="${myenviornment_etc_dir}/no_register_dns"
+  debug "myenviornment_no_register_dns_file=${myenviornment_no_register_dns_file}"
+dns_sqs_queue="${SQS_QUEUE_URL:-https://sqs.us-west-1.amazonaws.com/667005031541/dns_updates}"
+  debug "dns_sqs_queue=${dns_sqs_queue}"
+dns_sqs_region="${SQS_REGION:-us-west-1}"
+  debug "dns_sqs_region=${dns_sqs_region}"
+crontab_filename="${CRONTAB_FILE:-/etc/cron.d/on_reboot_update_hostname_in_dns}"
+  debug "crontab_filename=${crontab_filename}"
+aws_meta_url="${AWS_METADATA_URL:-http://169.254.169.254/latest/meta-data}"
+  debug "aws_meta_url=${aws_meta_url}"
+resolv_config="${RESOLV_CONFIG:-/etc/resolvconf/resolv.conf.d/base}"
+  debug "resolv_config=${resolv_config}"
+# dropped from CFEngine for legacy/running hosts which still
+# had issues with resolv_config summer 2017
+vic_tld_file='/etc/myenviornment/myenviornment_tld'
+  debug "vic_tld_file=${vic_tld_file}"
+bootstrap_conf="${BOOTSTRAP_CONF:-/etc/myenviornment/bootstrap.conf}"
+  debug "bootstrap_conf=${bootstrap_conf}"
+
+# gracefully pass if file does not exist,
+if [ -e "${bootstrap_conf}" ] ; then
+  try . ${bootstrap_conf}
+else
+  debug "NOTICE: Cannot load ${bootstrap_conf}"
+fi
+
+retry_count="${RETRIES:-1}"
+  debug "retry_count=${retry_count}"
+timeout="${TIMEOUT:-9}"
+  debug "timeout=${timeout}"
+retry_wait="${RETRY_WAIT:-9}"
+  debug "retry_wait=${retry_wait}"
+
+dns_ttl="${DNS_TTL:-60}"
+  debug "DNS_TTL=${DNS_TTL}" ; debug "dns_ttl=${dns_ttl}"
+
+# grabs the internal TLD/zone setting $vic_tld
+tld_check
+  debug "vic_tld=${vic_tld}"
+
+# Split, scrub, and validate our FQDN:
+# could be short or fqdn, e.g.: 'foo' or 'foo.foo.tld' or 'b.foo.foo.tld'
+_local_hostname="`hostname`"
+  debug "_local_hostname=${_local_hostname}"
+# slices off TLD (vic_tld) from full hostname neatly,
+short_hostname="${_local_hostname%\.$vic_tld}"
+  debug "short_hostname=${short_hostname}"
+# Next, let's re-combine the short hostname and tld into a clean FQDN,
+_fqdn="${short_hostname}.${vic_tld}"
+  debug "_fqdn=${_fqdn}"
+# finally, we set this resepcting that PERC_FQDN may have been set before,
+fqdn="${PERC_FQDN:-$_fqdn}"
+  debug "PERC_FQDN=${PERC_FQDN}" ; debug "fqdn=${fqdn}"
+
+aws_cred_file="${AWS_CRED_FILE:-/root/.aws/credentials}"
+if [ -r "${aws_cred_file}" ] ; then
+  hostlogger "AWS_CRED_FILE exists, using ${aws_cred_file} for SQS auth."
+  # http://docs.aws.amazon.com/cli/latest/topic/config-vars.html
+  export AWS_CONFIG_FILE="${aws_cred_file}"
+  export AWS_SHARED_CREDENTIALS_FILE="${aws_cred_file}"
+else
+  hostlogger "AWS_CRED_FILE can not be loaded, was expecting ${aws_cred_file}, creds fallback to IAM role for SQS use."
+fi
+
+# we need to leave breadcrumbs in syslog,
+_iid="`ask_aws instance-id`"
+instance_id="${_iid:-no-aws-id}"
+_lip="`ask_aws local-ipv4`"
+local_ip="${_lip:-no-aws-id}"
+
+
+## action
+
+# bail if we don't have our cli tooling
+[ -x "`command -v aws`" ] || die "FATAL: aws cli appears not to be installed or not executable."
+
+# ${myenviornment_etc_dir}/no_register_dns is created by the bootstrap template when the argument
+# --no-register-dns is passed to a_launch_instance *or* when the ${CLUSTER}/instances.ini
+# entry has dns = False set. If this file exists, log to syslog that we are *not*
+# registering the instance in DNS and exit out.  Lets short circuit check first,
+if [ -f "${myenviornment_no_register_dns_file}" ] && [ -z "${force_request}" ] ; then
+    hostlogger "Not registering instance with DNS due to presence of ${myenviornment_no_register_dns_file}"
+    exit 0
+fi
+
+trap 'cleanup' 0 1 2 3 6 14 15
+install_crontab_reboot_hostname
+request_dns_update
+[ "${no_set_addtional}" = "" ] && request_if_additional_dns_configured
+
+true

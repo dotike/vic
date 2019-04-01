@@ -1,0 +1,3071 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*
+'''
+vic-create -- Create a VIC from scratch.
+
+Use the help flag, 'vic create -h' for more info.
+'''
+# @depends: boto3, python (>=2.7)
+__version__ = '0.1'
+__author__ = 'Isaac (.ike) Levy <ike@blackskyresearch.net>'
+
+description="Create a VIC from scratch."
+
+import os
+import sys
+import getopt
+import boto3
+import vic
+import time
+import random
+from getpass import getpass
+import uuid
+import json
+
+def vprint(prettymuchanything='', fd=sys.stderr):
+    '''
+    If verbose mode is set, Prints just about anything to screen.
+
+    Args:
+      prettymuchanything - Usually strings, but just about any python object.
+      Operates on parent context var 'verbose', or ENV 'VERBOSE'.
+
+      fd - file descriptor out, usually 'sys.stderr' or 'sys.stdout'
+         Does not force this file descriptor if program is already redirecting.
+
+    Returns:
+      Returns nothing.
+      Print out put if either:
+         - 'verbose' exists and is not none
+         - ENV var 'VERBOSE' exists and is not none.
+    '''
+    try:
+        if os.environ['VERBOSE']:
+            print >> fd, "# {}".format(str(prettymuchanything))
+        elif verbose:
+            print >> fd, "# {}".format(str(prettymuchanything))
+    except:
+        pass
+
+def puidgen(seed=None, hostunique=None, extrabytes=None, nodebug=False):
+    '''
+    Generate unique id suitable for distributed enviornments, using
+    generalized utility.  Please see `puidgen -h` for more info, as
+    this function merely wraps it.
+
+    Args:
+      seed (str)
+      This input provides entropy context for the unique id creation.
+      When it is not provided, only the other enviornment specific inputs
+      are used to generate our unique ID, (which is OK but not optimal).
+
+      hostunique (str)
+      This overrides the string which would be otherwise be pulled from
+      /etc/ssh/ssh_host_rsa_key.pub - and bypasses trying to read from that
+      file.  The intent of this value is to provide some strong host-specific
+      data which ehances global uniqueness.
+
+      extrabytes (anything, will coerce to string)
+      This overrides the four random bytes this program pulls from
+      /dev/urandom by default, and bypasses tyring to read that data.
+
+      nodebug (bol)
+      Unset DEBUG if passsed via ENV.
+
+    ENV:
+      DEBUG      performs extra checks and sends warnings and errors to stdout
+      SEED       same as 'entropy' option above.
+      HOSTUNIQUE same as 'hostentropy' option above.
+      EXTRABYTES same as 'extrabytes' option above.
+
+    Returns: sha1 hash in string format, representing a UID suitable for use
+      in distributed enviornments.
+    '''
+    from subprocess import Popen, PIPE, STDOUT
+
+    uidcommad = ['puidgen']
+    try:
+        if seed:
+            uidcommad.append('-s {}'.format(str(seed)))
+        if hostunique:
+            uidcommad.append('-u {}'.format(str(hostunique)))
+        if extrabytes:
+            uidcommad.append('-r {}'.format(str(extrabytes)))
+        if nodebug:
+            uidcommad.append('-z')
+        col = Popen(uidcommad, stdout=PIPE, stdin=PIPE, stderr=STDOUT)
+        col_stdout = col.communicate(input=str(seed).encode())[0]
+        return col_stdout.decode().strip('\n')
+
+    except Exception as err:
+        raise type(err)('puidgen() error: {}'.format(err))
+
+def _report(instring='', reportfile=None):
+    '''
+    Append a message to the build report in a log/punt style.
+    Behaves like a UNIX append redirect, ">>".
+
+    Args:
+          instring - A string to write.  If empty, an empty line is appended.
+          reportfile - path to the file we will append to, defaults to
+          "pconf['build_report_file']".
+
+    Returns: True on successful append to file.
+    '''
+    try:
+        if not reportfile:
+            reportfile = pconf['build_report_file']
+        reportf = open(reportfile, "a")
+        reportf.write(instring)
+        reportf.write('\n')
+        reportf.close
+        return True
+    except Exception as err:
+        raise type(err)('_report(): {}'.format(err))
+
+def _report_print(instring='', reportfile=None):
+    '''
+    Print message to stdout, as well as appending it to a build report.
+    Wraps the _report function above, and behaves the same.
+
+    Behaves like UNIX tee(1).
+
+    Args: same as _report() function in this program.
+
+    Returns: True on successful append to file, prints to stdout
+             directly, (not in function return).
+    '''
+    try:
+        print instring
+        _report(instring, reportfile)
+    except Exception as err:
+        raise type(err)('_report_print(): {}'.format(err))
+
+def _report_ingress(instring='', reportfile=None):
+    '''
+    Convience function for writing strings to gateways file, for end report.
+
+    Args: same as _report() function in this program.
+
+    Returns: True on successful append to file.
+    '''
+    try:
+        if not reportfile:
+            reportfile = pconf['ingress_report_file']
+        _report(instring, reportfile)
+    except Exception as err:
+        raise type(err)('_report_ingress(): {}'.format(err))
+
+def set_dest_response_check(instance_id, boolean):
+    '''
+    Sets the notorious "destination response check" on an instance.
+
+    Args (all required):
+        instance_id - (str) AWS instance id.
+        boolean - (bool) True or false.
+
+    Returns: AWS API respone object.
+    '''
+    try:
+        try:
+            src_dest_client = boto3.client('ec2')
+            src_dest_response = src_dest_client.modify_instance_attribute(
+                SourceDestCheck={'Value': boolean},
+                DryRun=False,
+                InstanceId=instance_id,
+            )
+        except Exception as err:
+            raise ValueError(err)
+        return src_dest_response
+    except Exception as err:
+        raise type(err)('set_dest_response_check(): {}'.format(err))
+
+def yes_no():
+    '''
+    Process a yes/no answer from user input,
+    return True/False, die on bad input.
+    '''
+    try:
+        if pconf.yestoall:
+            vprint("-y yes to all, proceeding without user input.")
+            return True
+
+        user_choice = raw_input()
+        if user_choice.lower() in ['y', 'yes']:
+            return True
+        elif user_choice.lower() in ['n', 'no']:
+            print "Aborting, you can try again any time."
+            return False
+        else:
+            vic.die("Bad input, you can try again any time.")
+
+    except Exception as err:
+        raise type(err)(
+            'yes_no() error: {}'.format(err))
+
+def preflight_stage(target_vic_name=None, target_vic_net=None):
+    '''
+    Linear vic create process.
+
+    Args:
+        target_vic_name - str, vic name choice, which will be checked as
+          valid vicname for the info zone.
+    '''
+    try:
+        start_time = vic.wallclock()
+
+        if pconf['buildassets']:
+            return True
+
+        vic.redirect('stdout')
+        print "VIC creation session ID: {}".format(pconf.vic_create_session_id)
+
+        vprint('Fetching available VIC information from AWS...')
+        vic_names_state = vic.info_vicnames()
+        vic_nets_state = vic.info_vicnets()
+
+        all_infoTXT_query = vic.list_dns_names(
+            zone=pconf['info_domain'],
+            dns_type='TXT',
+        )
+
+        if not pconf.yestoall:
+            regions_available = vic.region_resolver(allregions=True)
+            region_candidate = pconf.alt('target_region', pconf['aws_default_region'])
+            print ""
+            print "Regions available to your account:"
+            print "{}".format(regions_available)
+            print ""
+            print "Which geographic AWS region will this VIC exist in?"
+            sys.stdout.write("Choose one AWS region, (empty for vic-conf default): [{}] ".format(
+                region_candidate))
+            pconf['region_choice'] = raw_input()
+            if pconf['region_choice'] in regions_available:
+                pconf['region'] = pconf['region_choice']
+                vprint("Proceeding with region_choice '{}'.".format(pconf['region']))
+            elif not pconf['region_choice']:
+                pconf['region'] = region_candidate
+                vprint("Proceeding with region_choice '{}'.".format(pconf['region']))
+            else:
+                print "Region choice must be one of {}.".format(regions_available)
+                vic.die("Aborting, you can try again any time.")
+        else:
+            pconf['region'] = pconf.alt('target_region', pconf['aws_default_region'])
+            vprint("Using AWS geographic region '{}'.".format(pconf['region']))
+
+        if not target_vic_name:
+            name_candidate = random.choice(
+                vic_names_state['available_names']
+            ).split('.', 1)[0]
+            vprint("Random selection from available VIC names: {}".format(name_candidate))
+        else:
+            name_candidate = target_vic_name
+
+        if not target_vic_net:
+            net_candidate = vic_nets_state['available_nets'].pop(0).split(
+                '.vicnet.', 1)[0].replace('_', '/', 1).strip('used.')
+            vprint("Next available VIC supernet: {}".format(net_candidate))
+        else:
+            net_candidate = target_vic_net
+
+        print ""
+        vicname_message = "Do you wish to use the vic-name '{}'? [y/n] ".format(name_candidate)
+        sys.stdout.write(vicname_message) 
+        if yes_no():
+            vic_name = name_candidate
+            vprint("Proceeding with vic_name '{}'.".format(vic_name))
+        else:
+           sys.exit(0)
+
+        sys.stdout.write("Do you wish to use the vic-netblock '{}'? [y/n] ".format(net_candidate))
+        if yes_no():
+            vic_netblock = net_candidate
+            vprint("Proceeding with vic_netblock '{}'.".format(vic_netblock))
+        else:
+            sys.exit(0)
+
+        if not pconf.yestoall:
+            print "What class of VIC will this be? (Delete operations may be restricted for all but 'dev'.)"
+            sys.stdout.write("Choose one of: {0} (empty for default)': [{1}] ".format(pconf.vic_classes, pconf['class_default']))
+            class_choice = raw_input()
+            if class_choice in pconf.vic_classes:
+                vic_class = class_choice
+                vprint("Proceeding with vic_class '{}'.".format(vic_class))
+            elif not class_choice:
+                vic_class = pconf['class_default']
+                vprint("Proceeding with vic_class '{}'.".format(vic_class))
+            else:
+                print "Class choice must be one of {}.".format(pconf.vic_classes)
+                vic.die("Aborting, you can try again any time.")
+        else:
+            vic_class = pconf.alt_set('class_default', 'dev')
+            vprint('Using vic class {}.'.format(vic_class))
+
+        print "Temporary ssh keys for use during this VIC build only,"
+        # TODO: massage os.system to coerce stdout/stderr control (display bugfix)
+        if pconf.yestoall:
+            os.system("vic ssh-keygen -p {0} -s {1} -y".format(vic_name, pconf.vic_create_session_id))
+        else:
+            os.system("vic ssh-keygen -p {0} -s {1}".format(vic_name, pconf.vic_create_session_id))
+
+        pconf['buildassets'] = "{0}/{1}/{2}".format(TMPDIR, vic_name, pconf.vic_create_session_id)
+        keydir = "{0}/ssh".format(pconf['buildassets'])
+        # TODO: vic-ssh-keygen to accept full path option, gotta move on now...t
+        pubkey = os.popen("cat `find {} -type f -name '*pub'`".format(keydir)).read()
+        print ""
+        print "ssh key pair generated in: {}".format(keydir)
+        print ""
+
+        vprint("Ensuring we have our build assets directory, (may already exist from ssh key creation), '{0}'".format(
+            pconf['buildassets']))
+        os.system("mkdir -p {0}".format(pconf['buildassets']))
+
+        vic_preflight_manifest = vic.vic_net_config_physical(vic_name, vic_netblock, region=pconf['region'])
+        vic_preflight_manifest['vic_create_session_id'] = pconf.vic_create_session_id
+        vic_preflight_manifest['init_user'] = pconf['user']
+        vic_preflight_manifest['session_ssh_pub_key'] = "{}".format(pubkey)
+        vic_preflight_manifest['vic_class'] = "{}".format(vic_class)
+        vic_preflight_manifest['region'] = pconf.get_bail('region', "AWS Region not defined.")
+        vic_preflight_manifest['vic_create_session_id'] = pconf.get_bail('vic_create_session_id', "VIC create session must be defined.")
+        vic_preflight_manifest['aws_account_id'] = vic.fetch_account_id()
+        vic_preflight_manifest['aws_account_console'] = "https://{0}.signin.aws.amazon.com/console".format(
+            vic_preflight_manifest['aws_account_id'][0])
+
+        # Block to generate base domain names list and inject them into the manifest
+        # for ResourceRecordSet in single call,
+        try:
+            _tld = vic_preflight_manifest['vpc_supernet']['name']
+            logical_map_batch = []
+            logical_map_individual_resources = []
+            for netname in vic_preflight_manifest['logical_map'].keys():
+                vic.upsert_list(logical_map_batch,
+                    {'Value': '"{0} {1}"'.format(netname, vic_preflight_manifest['logical_map'][netname])}
+                )
+                vic.upsert_list(logical_map_individual_resources, 
+                {'Name': netname, 'Type': 'TXT', 'TTL': 300, 'ResourceRecords': [
+                    {'Value': '"{}"'.format(vic_preflight_manifest['logical_map'][netname])}]
+                }
+                )
+            physical_map_batch = []
+            physical_map_individual_resources = []
+            az_list = []
+            for subnetname in vic_preflight_manifest['vpc_supernet']['subnets'].keys():
+                vic.upsert_list(physical_map_batch,
+                  {'Value': '"{0} {1}"'.format(subnetname,
+                      vic_preflight_manifest['vpc_supernet']['subnets'][subnetname]['network'])}
+                )
+                vic.upsert_list(physical_map_individual_resources,
+                {'Name': subnetname, 'Type': 'TXT', 'TTL': 300, 'ResourceRecords': [
+                  {'Value': '"{}"'.format(vic_preflight_manifest['vpc_supernet']['subnets'][subnetname]['network'])}]
+                }
+                )
+                vic.upsert_list(az_list,
+                  {'Value': '"{}"'.format(subnetname.split('.', 1)[0]) }
+                )
+
+            # singleton names (unicode names or values not allowed by AWS)
+            base_name_list = [
+                {'Name': "class.{}".format(_tld), 'Type': 'TXT', 'TTL': 300, 'ResourceRecords': [
+                  {'Value': '"{}"'.format(vic_preflight_manifest['vic_class'])}, ]},
+                {'Name': "region.{}".format(_tld), 'Type': 'TXT', 'TTL': 300, 'ResourceRecords': [
+                  {'Value': '"{}"'.format(vic_preflight_manifest['region'])}, ]},
+                {'Name': "logical_map.{}".format(_tld), 'Type': 'TXT', 'TTL': 300,
+                  'ResourceRecords': logical_map_batch
+                },
+                {'Name': "physical_map.{}".format(_tld), 'Type': 'TXT', 'TTL': 300,
+                  'ResourceRecords': physical_map_batch },
+                {'Name': "az.{}".format(_tld), 'Type': 'TXT', 'TTL': 300,
+                  'ResourceRecords': az_list },
+            ]
+            #vic.prettyPrint(base_name_list)
+            resource_record_set = logical_map_individual_resources + \
+                                  physical_map_individual_resources + \
+                                  base_name_list
+            vic.prettyPrint(resource_record_set)
+        except Exception as err:
+            raise type(err)('Error parsing vic_preflight_manifest for domain names: {}'.format(err))
+        vic_preflight_manifest['domain_names_rr_set'] = resource_record_set
+        vic_preflight_manifest['az_list'] = az_list
+
+        manifest_json="{0}/manifest.json".format(pconf['buildassets'])
+        vprint("Writing json manifest for this VIC creation: {0}".format(manifest_json))
+        with open(manifest_json, 'w') as manifest:
+            json.dump(vic_preflight_manifest, manifest)
+        manifest.close()
+
+        pconf['ingress_report_file'] = "{0}/ingress.txt".format(pconf['buildassets'])
+        vprint("Creating a ingress report: {}".format(pconf['ingress_report_file']))
+        os.system("touch {0}".format(pconf['ingress_report_file']))
+
+        pconf['build_report_file'] = "{0}/buildreport.txt".format(pconf['buildassets'])
+        vprint("Creating a build report: {}".format(pconf['build_report_file']))
+        os.system("touch {0}".format(pconf['build_report_file']))
+
+        # now that we have everything clear, lets start writing our report:
+        _report(start_time)
+        _report("boto version {}".format(str(boto3.__version__)))
+        _report("# preflight summary")
+        _report("VIC CREATE SESSION ID: {}".format(vic_preflight_manifest['vic_create_session_id']))
+        _report("VIC NAME: {}".format(vic_preflight_manifest['vic_name']))
+        _report("VIC SUPERNET: {}".format(vic_preflight_manifest['vic_supernet']))
+        _report("AWS REGION: {}".format(vic_preflight_manifest['region']))
+        _report("AWS INIT USER: {}".format(pconf['user']))
+        _report("AWS ACCOUNT ID: {}".format(vic.fetch_account_id()[0]))
+        _report("AWS ACCOUNT CONSOLE URL: {}".format(vic_preflight_manifest['aws_account_console']))
+        _report("TEMP SSH KEY PAIR: {}".format(keydir))
+        _report("# full build detail can be read from the manifest for this build,")
+        _report("MANIFEST: {}".format(manifest_json))
+        _report(vic.wallclock())
+        _report()
+        _report('##############################################################################')
+
+        vic.redirect()
+    except Exception as err:
+        raise type(err)('preflight_stage(): {}'.format(err))
+
+def create_stage():
+## 2) Kick off build process, (mostly boilerplate API writes from here)
+## # HUMAN INTERACTION NOW COMPLETE UNTIL VIC IS BREWED
+##
+##    - _report all state actions in local log (wherever VIC tooling is running)
+##    - _report all state actions as DNS TXT entry updates
+##      - each step between DNS TXT entry updates must be idemvicent
+    try:
+        vic.redirect('stdout')
+
+        vprint("OPERATOR INTERACTION NOW COMPLETE UNTIL VIC IS BREWED")
+        manifest_json="{0}/manifest.json".format(pconf.get_bail(
+                'buildassets',
+                "Build assets not defined, e.g. '/tmp/vic_name/unique_create_id/'."
+             ))
+        vprint("Loading json manifest for this VIC creation: {0}".format(manifest_json))
+        manifest = vic.configDict()
+        with open(manifest_json) as manifest_in:
+            manifest = dict(json.load(manifest_in))
+        manifest_in.close()
+        vic.prettyPrint(manifest)
+
+        pconf['build_report_file'] = pconf.alt_set('build_report_file',
+            "{0}/buildreport.txt".format(pconf['buildassets']))
+
+        _report(pconf.alt('continue_msg', "INITIALIZING CREATION STAGE"))
+        _report("AWS USER: {}".format(pconf['user']))
+        _report("RESUME SESSION ID: {}".format(manifest['vic_create_session_id']))
+        _report(vic.wallclock())
+        buildfile = open(pconf['build_report_file'], "r")
+        vprint("Printing existing build report: {}".format(pconf['build_report_file']))
+        catf = open(pconf['build_report_file'], "r")
+        print catf.read()
+        catf.close()
+
+        vprint('LAST GAS STATION FOR 78 MILES')
+        print "Your VIC is about to be created in AWS, you won't be asked any more questions."
+        print "If the build run fails somewhere, you can pick up where we failed by running:"
+        print "  $ vic create -i {}".format(pconf['buildassets'])
+        print ""
+        if not pconf['yestoall']:
+            last_ask = "Do you wish to proceed creating '{0}' as '{1}'? [y/n] ".format(
+                manifest['vic_name'],
+                manifest['vic_supernet'])
+            sys.stdout.write(last_ask)
+            if yes_no():
+                vprint("Proceeding with vic_name '{}'.".format(manifest['vic_name']))
+            else:
+                sys.exit(0)
+        # set this hard, so later breadcrumb return for vic.set_region() is correct,
+        os.environ['AWS_DEFAULT_REGION'] = manifest['region']
+
+##    - Set Route53 name
+
+        info_zone = "info.{0}".format(manifest['vic_tld'])
+        pconf['state_name'] = 'used.{0}.vicname.{1}'.format(manifest['vic_name'], info_zone)
+        used_net = "used.{0}.vicnet.{1}".format(
+                   str(manifest['vic_supernet']).strip().replace('/', '_'), info_zone)
+
+        # TODO: if we break out state handling functions, we'll have to sort out how to
+        # safely and effectively handle what is currently "pconf['state_name']".
+        # If done in haste, this could make these dangerously cumbersome...
+        def _check_build_state():
+            '''
+            Returns the list of values in our build state domain name.
+            Only operates on TXT records, for safety.
+
+            Args: none
+                  Requires our dns state name, "pconf['state_name']".
+
+            Returns: List of values in our state DNS name.
+
+            Example usage:
+               >> if foo in _check_build_state():
+               >>     do_something_because_we_have_state
+               >> else:
+               >>     do_whatever_operation
+               >>     _update_build_state('state_name')
+            '''
+            try:
+                return vic.r53_lookup(name=pconf['state_name'], dns_type='TXT')
+            except Exception as err:
+                raise ValueError(err)
+
+        def _update_build_state(appendstr=''):
+            '''
+            Appends a record to a TXT record.
+            Only operates on TXT records, for safety.
+
+            Args:
+                appendstr - a string to append to our state name.
+                Requires our dns state name, "pconf['state_name']".
+
+            Returns: boolean True, with successful actual update,
+            (not just the request, but the record is checked before
+            returning true).
+
+            Duplicate values are not allowed (by DNS or route53), and
+            if an appendstring already exists, the route53 upsert will
+            fail.  This behavior is kept, to prevent race conditions in
+            certain cases, primarily multiple users creating the same VIC.
+
+            Additionally, route53 documentation is unclear about the upper bound
+            for items which can be stuffed into TXT records, therefore, use
+            this state record conservatively.
+            '''
+            resource_records = []
+            try:
+                stateQuery = vic.r53_lookup(name=pconf['state_name'], dns_type='TXT')
+                if manifest['vic_create_session_id'] in stateQuery:
+                    for retval in stateQuery:
+                        resource_records.append({'Value': '"{}"'.format(retval)})
+                    resource_records.append({'Value': '"{}"'.format(appendstr)})
+
+                    r53conn = boto3.client('route53')
+                    izresponse = r53conn.change_resource_record_sets(
+                        HostedZoneId = vic.tld_to_zone_id(info_zone),
+                        ChangeBatch = {
+                            'Comment': manifest['vic_create_session_id'],
+                            'Changes': [
+                                {
+                                    'Action': 'UPSERT',
+                                    'ResourceRecordSet': {
+                                        'Name': pconf['state_name'],
+                                        'Type': 'TXT',
+                                        'TTL': 300,
+                                        'ResourceRecords': resource_records
+                                     },
+                                },
+                            ],
+                        }
+                    )
+                else:
+                    raise ValueError("VIC create session id does not match: {}".format(
+                        pconf['state_name']))
+                writeConfirmed = False
+                _checkcount = 0
+                while not writeConfirmed and _checkcount < 10:
+                    _checkcount = _checkcount + 1
+                    if appendstr in _check_build_state():
+                        writeConfirmed = True
+                        return True 
+                    time.sleep(1)
+                raise ValueError("_update_build_state() unable to confirm append operation: '{0}' '{1}'".format(
+                    pconf['state_name'], appendstr))
+            except Exception as err:
+                raise ValueError(err)
+
+        def _unlock_vic_state():
+            '''
+            Meant to be called at the *very end* of vic creation,
+            to modify the DNS record we are using for state.
+
+            It is important not to leave any intermediary state information
+            behind, as with long-term maintenance, this may allow other
+            mid-stage operations to unintentionally create objects.
+
+            When we are done, we are done.
+
+            Args: none.
+            Returns: True on success, also runs _report_print..
+            '''
+            try:
+                r53conn = boto3.client('route53')
+                izresponse = r53conn.change_resource_record_sets(
+                    HostedZoneId = vic.tld_to_zone_id(info_zone),
+                    ChangeBatch = {
+                        'Comment': manifest['vic_create_session_id'],
+                        'Changes': [
+                            {
+                                'Action': 'UPSERT',
+                                'ResourceRecordSet': {
+                                    'Name': pconf['state_name'],
+                                    'Type': 'TXT',
+                                    'TTL': 300,
+                                    'ResourceRecords': [
+                                         {'Value': '"ONLINE"'},
+                                     ],
+                                 },
+                            },
+                            {
+                                'Action': 'UPSERT',
+                                'ResourceRecordSet': {
+                                    'Name': used_net,
+                                    'Type': 'TXT',
+                                    'TTL': 300,
+                                    'ResourceRecords': [
+                                         {'Value': '"ONLINE"'},
+                                     ],
+                                 },
+                            },
+                        ],
+                    }
+                )
+                _report_print("  CREATE {} http{}: '{}', '{}'".format(
+                    izresponse['ChangeInfo']['Status'],
+                    izresponse['ResponseMetadata']['HTTPStatusCode'],
+                    pconf['state_name'], used_net))
+                # TODO: maybe we need a looping call here to check actual value set?
+
+                _report_print('\'{}\' set to value "ONLINE"'.format(pconf['state_name']))
+                return True
+            except Exception as err:
+                raise ValueError(err)
+
+        lockname = vic.list_dns_names(name=pconf['state_name'], zone=info_zone, dns_type='TXT')['names']
+        if lockname:
+            #locked_session = lockname[0]['ResourceRecords'][0]['Value'].strip().strip('"')
+            #if locked_session == manifest['vic_create_session_id']:
+            _statesnapshot = _check_build_state()
+            if manifest['vic_create_session_id'] in _statesnapshot:
+                lockcheck = "'{}' exists and matches our VIC build session id.".format(
+                    pconf['state_name'])
+                _report_print(lockcheck)
+            #elif locked_session == "ONLINE":
+            elif "ONLINE" in _statesnapshot:
+                _report_print("Bailing, {0} appears to belong to a completed or running VIC.".format(
+                    pconf['state_name']))
+                print manifest['aws_account_console']
+                sys.exit(77) 
+            else:
+                try:
+                    vics_apparent_inflight = []
+                    vics_apparent_request = vic.list_dns_names(
+                        name="*.vicname.{}".format(info_zone),
+                         zone=info_zone, dns_type='TXT')['names']
+                    for eachname in vics_apparent_request:
+                        if eachname['Name'].startswith('used'):
+                            if not eachname['ResourceRecords'][0]['Value'].startswith('ONLINE'):
+                                vic.upsert_list(vics_apparent_inflight,
+                                (eachname['Name'], eachname['ResourceRecords'][0]['Value']))
+                    _report_print("VIC NAMES LOCKED IN CREATION STATE:\n {}\n".format(vics_apparent_inflight))
+                except:
+                    pass
+                problem = '{0} does not match our session ID, route53 value is: {1}'.format(
+                    pconf['state_name'], str(locked_session))
+                print manifest['aws_account_console']
+                _report(problem)
+                vic.die(problem)
+
+        else:
+            _report_print("'{}' does not exist, creating it now as state name.".format(pconf['state_name']))
+            try:
+                # TODO: upsert when complete to release 'lock' by removing session id
+                r53conn = boto3.client('route53')
+                # So good: Change batches are considered transactional changes.  All or nothing.
+                izresponse = r53conn.change_resource_record_sets(
+                    HostedZoneId = vic.tld_to_zone_id(info_zone),
+                    ChangeBatch = {
+                        'Comment': manifest['vic_create_session_id'],
+                        'Changes': [
+                            {
+                                'Action': 'CREATE',
+                                'ResourceRecordSet': {
+                                    'Name': pconf['state_name'],
+                                    'Type': 'TXT',
+                                    'TTL': 300,
+                                    'ResourceRecords': [
+                                         {'Value': '"{}"'.format(manifest['vic_create_session_id'])},
+                                         {'Value': '"user:{}"'.format(pconf['user'])},
+                                         {'Value': '"region:{}"'.format(manifest['region'])},
+                                         {'Value': '"vic_name:{}"'.format(manifest['vic_name'])},
+                                     ],
+                                 },
+                            },
+                            {
+                                'Action': 'CREATE',
+                                'ResourceRecordSet': {
+                                    'Name': used_net,
+                                    'Type': 'TXT',
+                                    'TTL': 300,
+                                    'ResourceRecords': [
+                                         {'Value': '"{}"'.format(manifest['vic_create_session_id'])},
+                                         {'Value': '"user:{}"'.format(pconf['user'])},
+                                         {'Value': '"region:{}"'.format(manifest['region'])},
+                                         {'Value': '"vic_name:{}"'.format(manifest['vic_name'])},
+                                     ],
+                                 },
+                            },
+                        ],
+                    }
+                )
+                _report_print("  CREATE {} http{}: '{}', '{}'".format(
+                    izresponse['ChangeInfo']['Status'],
+                    izresponse['ResponseMetadata']['HTTPStatusCode'],
+                    pconf['state_name'], used_net))
+
+            # TODO: maybe we need a looping call here to check actual value set?
+            except Exception as err:
+                raise ValueError(err)
+
+##############################################################################
+## check state to bypass completed stages when re-running,
+        pconf['start_build_state'] = _check_build_state()
+
+##############################################################################
+## vpc_complete
+
+## STEP: create VPC
+## blocked by: minimal base information plus templated information
+## blocks: further subnet creation
+## requires: vic network (/16)
+##   - create VPC using /17 netblock
+
+        ## http://boto3.readthedocs.io/en/latest/guide/migrationec2.html#creating-a-vpc-subnet-and-gateway
+        ##ec2 = boto3.resource('ec2')
+        ##vpc = ec2.create_vpc(CidrBlock=manifest['vpc_supernet']['netblock'])
+        ##gateway = ec2.create_internet_gateway()
+        ##vpc = ec2.create_vpc(CidrBlock=manifest['vpc_supernet']['netblock'])
+        ##subnet = vpc.create_subnet(CidrBlock='10.0.0.0/25')
+        try:
+            # special check for previous existence of this named vic before attempting to add it,
+            try:
+                vic_exists = vic.validate_vic_id(manifest['vpc_supernet']['name'])
+                _report_print("VPC named {0} already exists as VPC id: {1}".format(
+                    manifest['vpc_supernet']['name'], vic_exists))
+            except:
+                vic_exists = ''
+                _report("VPC named {} does not yet exist.".format(manifest['vpc_supernet']['name']))
+            # check vic completion state
+            if not 'vpc_complete' in pconf['start_build_state'] and not vic_exists:
+                _report_print('TIME TO LIGHT VPC OBJECT')
+                try:
+                    vpcclient = boto3.client('ec2', region_name=manifest['region'])
+                    vpcresponse = vpcclient.create_vpc(
+                        CidrBlock=manifest['vpc_supernet']['netblock'],
+                        AmazonProvidedIpv6CidrBlock=False,
+                        DryRun=False,
+                        InstanceTenancy='default',
+                    )
+                    # GOTTA tag this sucker ASAP, (so sloppy for not providing mechansim in create_vpc()).
+                    pconf['vpc_id'] = vpcresponse['Vpc']['VpcId']
+                    tagresponse = vpcclient.create_tags(
+                        DryRun=False,
+                        Resources=[
+                            pconf['vpc_id'],
+                        ],
+                        Tags=[
+                            {'Key': 'Name',
+                                'Value': manifest['vpc_supernet']['name']},
+                            {'Key': 'vic_create_session_id',
+                                'Value': manifest['vic_create_session_id']},
+                            {'Key': 'vic_class',
+                                'Value': manifest['vic_class']},
+                            {'Key': 'creator',
+                                'Value': manifest['init_user']},
+                            {'Key': 'creation_date',
+                                'Value': vic.wallclock()},
+                        ]
+                    )
+                    #TODO: totally broken print output,
+                    _report_print(str(vic.prettyPrint(vpcresponse)))
+                    _update_build_state('vpc_complete')
+                except Exception as err:
+                    raise ValueError(err)
+            else:
+                pconf['vpc_id'] = vic_exists
+                _report_print("'vpc_complete' state set in '{0}', proceeding with VPC ID: {1}".format(
+                    pconf['state_name'], pconf['vpc_id']))
+        except Exception as err:
+            raise type(err)('state vpc_complete: {}'.format(err))
+
+##############################################################################
+## dns_zone_complete
+        try:
+            _target_name = manifest['vpc_supernet']['name']
+            if not 'dns_zone_complete' in pconf['start_build_state']:
+                _report_print("Setting private dns zone: '{}'".format(_target_name))
+                pzone_client = boto3.client('route53')
+                # was this zone already created?
+                try:
+                    pconf['private_zone_id'] = vic.tld_to_zone_id(_target_name)
+                    if not pconf['private_zone_id']:
+                        raise ValueError("No private_zone_id: '{}'".format(
+                            pconf['private_zone_id']))
+                    _report_print("private zone '{0}' exists as id '{1}'".format(
+                        _target_name, pconf['private_zone_id']))
+                except:
+                    _report_print("CREATING rotute53 private zone '{}'".format(
+                        _target_name))
+
+                    try:
+                        caller_ref = "vic_tld_{0}".format(str(uuid.uuid1()))
+                        private_zone_response = pzone_client.create_hosted_zone(
+                            Name=_target_name,
+                            VPC={
+                                'VPCRegion': manifest['region'],
+                                'VPCId': pconf['vpc_id'] 
+                            },
+                            CallerReference=caller_ref,
+                            HostedZoneConfig={
+                                'Comment': pconf['batch_comment'],
+                                'PrivateZone': True,
+                            },
+                        )
+                    except Exception as err:
+                        raise ValueError(err)
+                    vic.prettyPrint(private_zone_response)
+                    #TODO we may have to drop a sleep timer loop in here,
+                    # as route53 writes are slow and often fail:
+                    pconf['private_zone_id'] = vic.tld_to_zone_id(_target_name)
+                    if not pconf['private_zone_id']:
+                        raise ValueError("Private zone {0} does not exist: '{1}'".format(
+                            _target_name, pconf['private_zone_id']))
+                    _report_print("CREATE COMPLETE: private zone '{0}' exists as id '{1}'".format(
+                        _target_name, pconf['private_zone_id']))
+
+                # finally, associate our zone with our VPC:
+                ## http://boto3.readthedocs.io/en/latest/reference/services/route53.html#Route53.Client.associate_vpc_with_hosted_zone
+                # confirming VPC attributes are correctly set for DNS,
+                # (this is misleading/automagic in the Console wizard... meh...)
+                if not vic.vpc_domains_enabled(pconf['vpc_id']):
+                    client = boto3.client('ec2', region_name=manifest['region'])
+                    try:
+                        attr_set_response = client.modify_vpc_attribute(
+                            EnableDnsHostnames={'Value': True},
+                            VpcId=pconf['vpc_id']
+                        )
+                        vic.prettyPrint(attr_set_response)
+                        attr_set_response = client.modify_vpc_attribute(
+                            EnableDnsSupport={'Value': True},
+                            VpcId=pconf['vpc_id']
+                        )
+                        vic.prettyPrint(attr_set_response)
+                    except Exception as err:
+                        raise ValueError(err)
+                    # one last check, since this is a critical yet fussy setting:
+                    if vic.vpc_domains_enabled(pconf['vpc_id']):
+                        _report_print(
+                            "VPC attributes 'EnableDnsSupport' and 'EnableDnsHostnames' True for for '{}'.".format(
+                        pconf['vpc_id']))
+                    else:
+                        _report_print(
+                            "VPC attributes setting failure, 'EnableDnsSupport' and 'EnableDnsHostnames': '{}'.".format(
+                            pconf['vpc_id']))
+                        _report_print("Please try to re-run again in some minutes to let AWS settle,")
+                        _report_print("  $ vic create -i {}".format(pconf['buildassets']))
+                        raise ValueError('EnableDnsSupport' and 'EnableDnsHostnames')
+                else:
+                    _report_print(
+                        "VPC attributes 'EnableDnsSupport' and 'EnableDnsHostnames' True for for '{}'.".format(
+                        pconf['vpc_id']))
+
+                # setting this is a fragile binding,
+                if not pconf['vpc_id'] in vic.zone_vpc_associations(_target_name):
+                    try:
+                        _report_print("Associating private zone '{0}'/'{1}' to VPC '{2}',".format(
+                            _target_name, pconf['private_zone_id'], pconf['vpc_id']))
+                        attach_response = pzone_client.associate_vpc_with_hosted_zone(
+                            HostedZoneId=pconf['private_zone_id'],
+                            VPC={
+                                'VPCRegion': manifest['region'],
+                                'VPCId': pconf['vpc_id'] 
+                            },
+                            Comment=manifest['vic_create_session_id']
+                        )
+                        vic.prettyPrint(attach_response)
+                        _report_print("SUCCESS associated private zone '{0}'/'{1}' to VPC '{2}'.".format(
+                            _target_name, pconf['private_zone_id'], pconf['vpc_id']))
+                    except Exception as err:
+                        raise ValueError(err)
+                else:
+                    _report_print("Already assciated: private zone '{0}'/'{1}' to VPC '{2}', moving on.".format(
+                        _target_name, pconf['private_zone_id'], pconf['vpc_id']))
+
+                _update_build_state('dns_zone_complete')
+            else:
+                pconf['private_zone_id'] = vic.tld_to_zone_id(_target_name)
+                _report_print("'dns_zone_complete' state set in '{0}', priv zone '{1}' exists as id '{2}'.".format(
+                    pconf['state_name'], _target_name, pconf['private_zone_id']))
+
+        except Exception as err:
+            raise type(err)('state dns_zone_complete: {}'.format(err))
+
+##############################################################################
+## dns_names_complete
+
+        try:
+            # follow up by creating base wildcard and info zones,
+            names_list = []
+            if not 'dns_names_complete' in pconf['start_build_state']:
+                try:
+                    nameconn = boto3.client('route53')
+                    for onename in manifest['domain_names_rr_set']:
+                        names_list.append(str(onename['Name']))
+                        nameresponse = nameconn.change_resource_record_sets(
+                            HostedZoneId = pconf['private_zone_id'],
+                            ChangeBatch = {
+                                'Comment': pconf['batch_comment'],
+                                'Changes': [
+                                    {
+                                        'Action': 'UPSERT',
+                                        'ResourceRecordSet': {
+                                            'Name': onename['Name'],
+                                            'Type': onename['Type'],
+                                            'TTL': onename['TTL'],
+                                            'ResourceRecords': onename['ResourceRecords'],
+                                        },
+                                    },
+                                ],
+                            },
+                        )
+                        print "  UPSERT {0} {1} http{2}: '{3}'".format(
+                              nameresponse['ChangeInfo']['Status'],
+                              onename['Name'],
+                              nameresponse['ResponseMetadata']['HTTPStatusCode'],
+                              manifest['vpc_supernet']['name'],
+                            )
+                        time.sleep(float(pconf['aws_retry_timeout']))
+                except Exception as err:
+                    raise ValueError(err)
+
+                _report_print("Base domain names set: {0}'.".format(names_list))
+                _update_build_state('dns_names_complete')
+            else:
+                _report_print("'dns_names_complete' state set in '{0}', names already exist for {1}'.".format(
+                    pconf['state_name'], manifest['vpc_supernet']['name']))
+
+        except Exception as err:
+            raise type(err)('state dns_names_complete: {}'.format(err))
+
+###############################################################################
+### dns_sqs_complete
+#
+## Eplicitly not implemented in VIC tooling:
+##  - SQS queue (for failed/jammed DNS requests)
+##  - CloudWatch Alert (sends to SQS Queue on failures)
+##  - PagerDuty Integration into CloudWatch Alert
+## These items need to be handled in next stages, (vic-global TF stack)
+#
+#        try:
+#            if not 'dns_sqs_complete' in pconf['start_build_state']:
+#                print '#### worksvic dns_sqs_complete'
+#
+#                current_sqs_queues = vic.list_sqs_queues(
+#                    vic_id=manifest['vpc_supernet']['name'],
+#                    region=manifest['region']
+#                )
+#                #vic.prettyPrint(current_sqs_queues)
+#                q_name_prefix = manifest['vpc_supernet']['name'].replace('.', '-')
+#                dns_sqs_q_name = '{}-dns_updates'.format(q_name_prefix)
+#                dns_dead_letter_q_name = '{}-dns_failures'.format(q_name_prefix)
+#
+#
+## For each vic we need:
+#
+#    # dead letter queue (for SQS queue)
+#
+#                if not dns_dead_letter_q_name in current_sqs_queues.keys():
+#                    _report_print("Creating SQS Dead Letter Queue for DNS Updates: {}".format(dns_dead_letter_q_name))
+#                    try:
+#                        qd_dnsupdates_client = boto3.client('sqs', region_name=manifest['region'])
+#                        qd_dnsupdates_response = qd_dnsupdates_client.create_queue(
+#                            QueueName=dns_dead_letter_q_name,
+#                            Attributes={
+#                                'VisibilityTimeout': '1',
+#                                'MessageRetentionPeriod': '1209600',
+#                            }
+#                        )
+#                    except Exception as err:
+#                        raise ValueError(err)
+#                    vic.prettyPrint(qd_dnsupdates_response)
+#                else:
+#                    _report_print("Dead Letter Queue already exists for DNS Updates: {}".format(dns_dead_letter_q_name))
+#
+#                current_sqs_queues = vic.list_sqs_queues(
+#                    vic_id=manifest['vpc_supernet']['name'],
+#                    region=manifest['region']
+#                )
+#
+#    # create SQS queue
+#
+#                if not dns_sqs_q_name in current_sqs_queues.keys():
+#                    dead_q_arn = current_sqs_queues[dns_dead_letter_q_name]['attributes']['QueueArn']
+#                    print dead_q_arn
+#                    redrive_policy = {"deadLetterTargetArn": dead_q_arn,
+#                                      "maxReceiveCount": 3,
+#                    }
+#                    print redrive_policy
+#                    _report_print("Creating SQS Queue for DNS Updates: {}".format(dns_sqs_q_name))
+#                    try:
+#                        q_dnsupdates_client = boto3.client('sqs', region_name=manifest['region'])
+#                        q_dnsupdates_response = q_dnsupdates_client.create_queue(
+#                            QueueName=dns_sqs_q_name,
+#                            Attributes={
+#                                'VisibilityTimeout': '90',
+#                                'MessageRetentionPeriod': '604800',
+#                                'RedrivePolicy': json.dumps(redrive_policy),
+#                            }
+#                        )
+#                        vic.prettyPrint(q_dnsupdates_response)
+#                    except Exception as err:
+#                        raise ValueError(err)
+#                else:
+#                    _report_print("Queue already exists for DNS Updates: {}".format(dns_sqs_q_name))
+#
+##    # create IAM policy, allowing perms to SQS queue (mkdir -p style)
+##                dns_iam_roles = vic.list_iam_roles(vic_id=manifest['vpc_supernet']['name'])
+##                if not dns_iam_roles:
+##                    _report_print("CREATE IAM roles for DNS Updates")
+##                    # TODO: worksvic - fetch role from config style file
+##                    try:
+##                      iam_client = boto3.client('iam')
+##                      iam_response = iam_client.create_role(
+##                          Path="/vics_dns_sqs/{}/".format(manifest['vpc_supernet']['name']),
+##                          RoleName='{}.dns_sqs'.format(manifest['vpc_supernet']['name']),
+##                          AssumeRolePolicyDocument='string',
+##                          Description='DNS SQS Queue Role for {}'.format(manifest['vpc_supernet']['name']),
+##                          #PermissionsBoundary='{}', # TODO
+##                          Tags=[
+##                              {
+##                                  'Key': 'string',
+##                                  'Value': 'string'
+##                              },
+##                              # NOTICE: at this time AWS/boto3 cannot apparently retrieve
+##                              # tags for AWS IAM Role objects.  We'll set them regardless.
+##                          ]
+##                      )
+##                      vic.prettyPrint(iam_response)
+##                      sys.exit(44)
+##                    except Exception as err:
+##                        raise ValueError(err)
+##
+##
+##                else:
+##                    _report(dns_iam_roles.keys)
+##                    _report_print("IAM roles already exist for DNS Updates: {}".format(dns_iam_roles.keys()))
+##                #for iam_name, iam_meta in dns_iam_roles.iteritems():
+##                #    print "################################################################################"
+##                #    print iam_name
+##                #    vic.prettyPrint(iam_meta)
+##
+##    # create IAM role, with attached policy (mkdir -p style)
+##    # create Lambda 
+#
+## Eplicitly not 
+#
+#                # TODO worksvic
+#                _update_build_state('dns_sqs_complete')
+#            else:
+#                _report_print("'subnet_complete' state set in '{0}', subnets already exist for {1}'.".format(
+#                    pconf['state_name'], manifest['vpc_supernet']['name']))
+#
+#        except Exception as err:
+#            raise type(err)('state subnet_complete: {}'.format(err))
+
+
+##############################################################################
+## subnet_complete
+        try:
+            if not 'subnet_complete' in pconf['start_build_state']:
+                # TODO: wrap in _update_build_state once functional, for bypass.
+
+                # first, sanity-check on live VPC, and possible conflicting subnets,
+                pconf['live_vic'] = vic.list_vics(manifest['vpc_supernet']['name']).itervalues().next()
+                # confirm with live vic, not manifest:
+                pconf['live_vic_class'] = vic.aws_tags_dict(pconf['live_vic']['Tags'])['vic_class']
+                try:
+                    live_subnets = vic.list_vpc_subnets(manifest['vpc_supernet']['name'])
+                except:
+                    live_subnets = {}
+                vic.prettyPrint(live_subnets)
+
+                # start our big iteration block to:
+                #   -  possibly create subnet if not already exists
+                #   - (re)-tag subnets
+                # (all this nonsense because boto create_subnets() does not allow tagging at create)
+                for subname in manifest['vpc_supernet']['subnets'].keys():
+                    subnet_id_exists = ''
+                    subnet_live_meta = {}
+                    _report("VALIDATING SUBNET: '{}'".format(subname))
+                    subdict = manifest['vpc_supernet']['subnets'][subname]
+                    # check for existence of this subnet,
+                    try:
+                        # subnet id tag is likely not to exist yet,
+                        # compare netblocks to see if we have a match
+                        for livenet_id in live_subnets.keys():
+                            if str(live_subnets[livenet_id]['CidrBlock']) == str(subdict['network']):
+                                subnet_id_exists = livenet_id
+                                subnet_live_meta = live_subnets[livenet_id]
+                                _report_print("SUBNET EXISTS WITH NETBLOCK MATCH: '{0}' '{1}' '{2}'".format(
+                                    subnet_live_meta['CidrBlock'], subnet_id_exists, subname))
+                    except:
+                        pass
+
+                    # Check existing VPC subnet for safety and sanity,
+                    if subnet_id_exists and subnet_live_meta:
+                        # check if live subnet is previously tagged,
+                        try:
+                            subnet_tags = vic.aws_tags_dict(subnet_live_meta['Tags'])
+                            # if we're working in a prod class VPC and find any tags, just bail.
+                            if subnet_tags and pconf['live_vic_class'].lower().startswith('prod'):
+                                msg = "SUBNET '{0}' exists, and parent VPC is class '{1}', bailing for safety: {2}".format(
+                                    live_subdict, pconf['live_vic_class'], subnet_tags)
+                                _report_print(msg)
+                                _report_print("RESOLVE IN THE AWS CONSOLE BEFORE CONTINUING: {}".format(
+                                    pconf['consoleurl']))
+                                raise ValueError(msg)
+                            for tag in subnet_tags.keys():
+                                if tag == 'vic_create_session_id':
+                                    if subnet_tags[tag] != manifest['vic_create_session_id']:
+                                        msg = "SUBNET '{0}' TAGGED FROM DIFFERENT VIC CREATE SESSION: '{1}'".format(
+                                             subname, subnet_tags[tag])
+                                        _report_print(msg)
+                                        _report_print("RESOLVE IN THE AWS CONSOLE BEFORE CONTINUING: {}".format(
+                                            pconf['consoleurl']))
+                                        raise ValueError(msg)
+                                    else:
+                                        # PEP8, I'm sorry.
+                                        msg = "CONTINUING, 'vic_create_session_id' tag for '{0}' belongs to our session: '{1}'".format(subname, subnet_tags[tag])
+                                        _report_print(msg)
+                        except:
+                            pass
+
+                    # subnet_id_exists and subnet_live_meta are empty, create!
+                    else:
+                        _report("CREATING SUBNET: '{}'".format(subname))
+                        subnetclient = boto3.client('ec2', region_name=manifest['region'])
+                        try:
+                            subnetresponse = subnetclient.create_subnet(
+                                AvailabilityZone=subdict['availability_zone'],
+                                CidrBlock=subdict['network'],
+                                VpcId=pconf['vpc_id'],
+                                DryRun=False
+                            )
+                                # TODO future: Ipv6CidrBlock='string',
+                        except Exception as err:
+                            raise ValueError(err)
+                        vic.prettyPrint(subnetresponse)
+                        subnet_id_exists = subnetresponse['Subnet']['SubnetId']
+                        _report_print("CREATED SUBNET, but may not yet be available: {}".format(subnet_id_exists))
+
+                    _report("VALIDATING SUBNET: '{}'".format(subname))
+                    _build_command = "$ vic create -i {}".format(pconf['buildassets'])
+                    AWS_create_delay_msg = """
+Timeout while waiting for VPC subnet to become available,
+
+subnets can sometimes take tens of minutes to become available in AWS.
+You can try to continue this build any time by running:
+
+  {}
+""".format(_build_command)
+                    AWS_create_delay_custom_wait = 5
+
+                    # Gotta tag separately, AWS API limited: https://github.com/boto/boto3/issues/591
+                    # first, busy-loop to wait for subnet creation existence before tagging, subnet
+                    # create operations *frequently* hang.
+                    subnet_available = ''
+                    retry_wait = pconf.alt('aws_retry_timeout', 1)
+                    time.sleep(float(retry_wait))
+                    _subnet_loop_count = 0
+                    while not subnet_available:
+                        _subnet_loop_count = _subnet_loop_count + 1
+                        print "WAITING until validating subnet_id_exists: '{}'".format(subnet_id_exists)
+                        time.sleep(float(AWS_create_delay_custom_wait)) # fiddly upstream...
+                        try:
+                            # warning, use subnet id not name here, (since we are tagging name next),
+                            subnet_available = vic.validate_subnet_id(subnet_id_exists)
+                            _report_print("SUBNET AVAILABLE FOR TAGGING: '{}'".format(subnet_available))
+                            break
+                        except:
+                            if _subnet_loop_count > pconf.alt('aws_retry_count', 5):
+                                _report_print(AWS_create_delay_msg) 
+                                sys.exit(35)
+                            _report("Waiting for subnet to become available, 'ctrl-c' to exit if this hangs too long.")
+                            pass
+                    try:
+                        subtagclient = boto3.client('ec2', region_name=manifest['region'])
+                        tagresponse = subtagclient.create_tags(
+                            DryRun=False,
+                            Resources=[
+                                subnet_id_exists,
+                            ],
+                            Tags=[
+                                {'Key': 'Name',
+                                    'Value': subname.strip('.')},
+                                {'Key': 'logical_name',
+                                    'Value': subdict['logical_association']['name']},
+                                {'Key': 'logical_net',
+                                    'Value': subdict['logical_association']['network']},
+                                {'Key': 'net_plumbing',
+                                    'Value': subdict['net_plumbing']},
+                                {'Key': 'routing_block',
+                                    'Value': subdict['routing_block']},
+                                {'Key': 'vic_name',
+                                    'Value': manifest['vic_name']},
+                                {'Key': 'vic_create_session_id',
+                                    'Value': manifest['vic_create_session_id']},
+                                {'Key': 'creator', 
+                                    'Value': pconf['user'],},
+                            ]
+                        )
+                        vic.prettyPrint(tagresponse)
+                    except Exception as err:
+                        raise ValueError(err)
+                    # subnet id tag should exist by now,
+                    named_subnet_exists = vic.validate_subnet_id(subname)
+
+                _update_build_state('subnet_complete')
+            else:
+                _report_print("'subnet_complete' state set in '{0}', subnets already exist for {1}'.".format(
+                    pconf['state_name'], manifest['vpc_supernet']['name']))
+
+        except Exception as err:
+            raise type(err)('state subnet_complete: {}'.format(err))
+
+##############################################################################
+## set_wan_complete
+        try:
+            if not 'set_wan_complete' in pconf['start_build_state']:
+                _inet_facing_phys_names = []
+                for phys_net_name, phys_net_dict in manifest['vpc_supernet']['subnets'].iteritems():
+                    if phys_net_dict['inet_facing']:
+                        vic.upsert_list(_inet_facing_phys_names, phys_net_name)
+                live_nets = vic.list_physical_subnets(manifest['vpc_supernet']['name'])
+                _live_inet_facing = {}
+                for live_sub_name, live_sub_key in live_nets.iteritems():
+                    if live_sub_name in _inet_facing_phys_names:
+                        _live_inet_facing[live_sub_name] = live_sub_key['subnet_id']
+
+                pconf['inet_facing_physical'] = _live_inet_facing
+
+                for phys_net in pconf['inet_facing_physical'].keys():
+                    try:
+                        igwclient = boto3.client('ec2', region_name=manifest['region'])
+                        igwresponse = igwclient.modify_subnet_attribute(
+                            MapPublicIpOnLaunch={
+                                'Value': True
+                            },
+                            SubnetId=pconf['inet_facing_physical'][phys_net]
+                        )
+                        # TODO: IPv6,
+                        # AssignIpv6AddressOnCreation={ 'Value': True|False },
+                        vic.prettyPrint(igwresponse)
+                    except Exception as err:
+                        raise ValueError(err)
+
+                _update_build_state('set_wan_complete')
+            else:
+                _report_print("'set_wan_complete' state set in '{0}'.".format(
+                    pconf['state_name']))
+        except Exception as err:
+            raise type(err)('state set_wan_complete: {}'.format(err))
+
+##############################################################################
+## set_igw_complete
+        try:
+            if not 'set_igw_complete' in pconf['start_build_state']:
+
+                pconf['vic_id'] = vic.validate_vic_id(manifest['vpc_supernet']['name'])
+                all_igws = vic.list_igw(region=manifest['region'])
+
+                unattached_igws = {} # multiple IGWs, keyed by id
+                igw_attached_meta = {} # single IGW dict
+                for igw_name, igw_meta in all_igws.iteritems():
+                    if not igw_meta['Attachments']:
+                        igw_meta['TagSane'] = vic.aws_tags_dict(igw_meta['Tags'])
+                        unattached_igws[igw_name] = igw_meta
+                    else:
+                        for attachment in igw_meta['Attachments']:
+                            try: # bypass key errors,
+                                if attachment['VpcId'] == pconf['vic_id']:
+                                    igw_attached_meta = igw_meta
+                                    _report_print("ATTACHED IGW FOUND MATCHING OUR CREATE SESSION: {}".format(
+                                    igw_name))
+                            except:
+                                pass
+                igw_unattached_meta = {} # single IGW dict
+                for igw_name, igw_meta in unattached_igws.iteritems():
+                    try:
+                        if igw_meta['TagSane']['vic_create_session_id'] == manifest['vic_create_session_id']:
+                            igw_unattached_meta = igw_meta
+                            _report_print("UN-ATTACHED IGW FOUND MATCHING OUR CREATE SESSION: {}".format(
+                                igw_name))
+                        # TODO: race conition can ocasionally orphan IGW here, do not handle now-
+                        # handle in cleanup utility later.
+                    except:
+                        pass
+
+##https://docs.aws.amazon.com/AmazonVPC/latest/UserGuide/VPC_Internet_Gateway.html
+## create_internet_gateway(**kwargs) # THESE CAN GET LOST, no way to tag during create
+
+                if not igw_attached_meta and not igw_unattached_meta:
+                    try:
+                        igwclient = boto3.client('ec2', region_name=manifest['region'])
+                        igwresponse = igwclient.create_internet_gateway(
+                            DryRun=False
+                        )
+                        vic.prettyPrint(igwresponse)
+                        pconf['igw_id'] = igwresponse['InternetGateway']['InternetGatewayId']
+                        _report_print("CREATED NEW IGW: {}".format(pconf['igw_id']))
+                    except Exception as err:
+                        raise ValueError(err)
+## tag internet gateway ASAP
+                if igw_unattached_meta or pconf['igw_id']:
+                    if igw_unattached_meta:
+                        pconf['igw_id'] = igw_unattached_meta['InternetGatewayId']
+                    try:
+                        igwclient = boto3.client('ec2', region_name=manifest['region'])
+                        igwtagresponse = igwclient.create_tags(
+                            DryRun=False,
+                            Resources=[
+                                pconf['igw_id'],
+                            ],
+                            Tags=[
+                                {'Key': 'Name',
+                                    'Value': manifest['vpc_supernet']['name']},
+                                {'Key': 'vic_create_session_id',
+                                    'Value': manifest['vic_create_session_id']},
+                                {'Key': 'vic_class',
+                                    'Value': manifest['vic_class']},
+                                {'Key': 'creator', 
+                                    'Value': pconf['user'],},
+                            ]
+                        )
+                        vic.prettyPrint(igwtagresponse)
+                        _report_print("TAGGED IGW: {}".format(pconf['igw_id']))
+                    except Exception as err:
+                        raise ValueError(err)
+
+## attach_internet_gateway(**kwargs) # attach to VPC
+                if pconf['igw_id']:
+                    try:
+                        attachclient = boto3.client('ec2', region_name=manifest['region'])
+                        attachresponse = attachclient.attach_internet_gateway(
+                            DryRun=False,
+                            InternetGatewayId=pconf['igw_id'],
+                            VpcId=pconf['vic_id'],
+                        )
+                        vic.prettyPrint(attachresponse)
+                        _report_print("ATTACHED IGW: '{0}' '{1}'".format(
+                            pconf['igw_id'], pconf['vic_id']))
+                    except Exception as err:
+                        raise ValueError(err)
+
+                _update_build_state('set_igw_complete')
+            ## TODO: future, IPv6 egress_only_gateway
+            else:
+                _report_print("'set_igw_complete' state set in '{0}'.".format(
+                    pconf['state_name']))
+        except Exception as err:
+            raise type(err)('state set_igw_complete: {}'.format(err))
+
+##############################################################################
+## set_defaultroutes_complete
+
+        try:
+            if not 'set_defaultroutes_complete' in pconf['start_build_state']:
+
+                pconf['vic_id'] = vic.validate_vic_id(manifest['vpc_supernet']['name'])
+                attached_vpc = []
+                # TODO: AWS API bug found, workround now, fix later.
+                #pconf['vic_igw'] = vic.list_igw(vic_id=pconf['vic_id'], region=manifest['region'])
+                igw_dict = vic.list_igw(region=manifest['region'])
+                for igw_id, igw_meta in igw_dict.iteritems():
+                    for attached in igw_meta['Attachments']:
+                        try: # avoid key missing errors
+                            if attached['VpcId'] == pconf['vic_id']:
+                                vic.upsert_list(attached_vpc, igw_meta['InternetGatewayId'])
+                        except:
+                            pass
+                if len(attached_vpc) != 1:
+                    raise ValueError("A VIC VPC may only be attached to one IGW, '{0}' is attached to: {1}".format(
+                        pconf['vic_id'], attached_vpc))
+                else:
+                    pconf['vic_igw'] = attached_vpc[0]
+
+                vic_route_tables = vic.list_route_tables(
+                    pconf['vic_id'], region=manifest['region'])
+                if len(vic_route_tables) != 1:
+                    raise ValueError("A route table may only be attached to one VIC, '{0}' is attached to: {1}".format(
+                        pconf['vic_id'], vic_route_tables))
+                # only one item, but just use iteritems for sane syntax:
+                for rt_key, rt_val in vic_route_tables.iteritems():
+                    # iterate through routes, to see if we already have the one we want to set,
+                    pconf['vic_route_table'] = rt_key
+
+                inet_ipv4 = '0.0.0.0/0'
+## create_route(**kwargs) - route table for VPC, "0.0.0.0/0 to pconf['igw_id']"
+                try:
+                    # HORAY!  This call is apparently idemvicent, can hit it as often as we wish.
+                    rclient = boto3.client('ec2', region_name=manifest['region'])
+                    rresponse = rclient.create_route(
+                        DestinationCidrBlock=inet_ipv4,
+                        DryRun=False,
+                        GatewayId=pconf['vic_igw'],
+                        RouteTableId=pconf['vic_route_table'],
+                    )
+                    # TODO IPv6:
+                    #     EgressOnlyInternetGatewayId='string',
+                    #     DestinationIpv6CidrBlock='string',
+                    vic.prettyPrint(rresponse)
+                except Exception as err:
+                    raise ValueError(err)
+
+                _update_build_state('set_defaultroutes_complete')
+            else:
+                _report_print("'set_defaultroutes_complete' state set in '{0}'.".format(
+                    pconf['state_name']))
+        except Exception as err:
+            raise type(err)('state set_defaultroutes_complete: {}'.format(err))
+
+##############################################################################
+## set_acl_complete
+        # all ACL behavior must be defined by configuration, not code.
+        # Currently, we have all the config we need in 'inet facing' subnet config.
+        # All other rules are to constrain private RFC1918 traffic, and disallow
+        # non-public zones from passing packets to inet ingress like ELB, etc...
+        #
+        # Noteworthy: we better have all our subnets by now, since they pick
+        # up default acl's as they are added to the VPC, when the first acl
+        # exists.
+        #
+        ######################################################################
+        # TODO: near future, cut egress (out) from a config variable similar to
+        # inet_facing, different from just 'private' in that hosts in this zone
+        # can talk to anything RFC1918 local, but cannot reach the internet.
+        try:
+            if not 'set_acl_complete' in pconf['start_build_state']:
+
+                retry_wait = pconf.alt('aws_retry_timeout', 1)
+
+                def _tag_acl(prefix='', acl_description='', acl_id=''):
+                    if prefix:
+                        name_tag = "{}.{}".format(prefix, manifest['vpc_supernet']['name'])
+                        _prefix = prefix
+                    else:
+                        name_tag = manifest['vpc_supernet']['name']
+                        _prefix = 'undefined'
+                    if not acl_description:
+                        acl_description = 'undefined'
+                    try:
+                        tagclient = boto3.client('ec2', region_name=manifest['region'])
+                        tagresponse = tagclient.create_tags(
+                            DryRun=False,
+                            Resources=[
+                                acl_id,
+                            ],
+                            Tags=[
+                                {'Key': 'Name',
+                                    'Value': name_tag},
+                                {'Key': 'vic_create_session_id',
+                                    'Value': manifest['vic_create_session_id']},
+                                {'Key': 'vic_class',
+                                    'Value': manifest['vic_class']},
+                                {'Key': 'acl_purpose',
+                                    'Value': _prefix},
+                                {'Key': 'description',
+                                    'Value': acl_description},
+                                {'Key': 'creator', 
+                                    'Value': pconf['user'],},
+                            ]
+                        )
+                        vic.prettyPrint(tagresponse)
+                    except Exception as err:
+                        raise ValueError(err)
+
+                pconf['vic_id'] = vic.validate_vic_id(manifest['vpc_supernet']['name'])
+
+                existing_acls = vic.list_network_acls(
+                    vic_id=manifest['vpc_supernet']['name'], region=manifest['region'])
+
+                acl_desc = "Default (private), allows 'vic_supernet', and outbound inet- but no inbound inet."
+                # tag default ACL
+                for acl_key, acl_val in existing_acls.iteritems():
+                    if acl_val['IsDefault']:
+                        _report_print("TAGGING DEFAULT ACL: '{}'".format(pconf['acl_id']))
+                        _tag_acl(prefix='default', acl_description=acl_desc, acl_id=acl_key)
+
+                def _acl_create_and_tag(prefix='', acl_description=''):
+                    '''
+                    Because this is one of the AWS API calls which cannot tag on create.
+                    '''
+                    if not prefix:
+                        raise ValueError("_acl_create_and_tag requires named prefix, got: {}".format(
+                            prefix))
+                    # create new ACL ruleset,
+                    try:
+                        aclclient = boto3.client('ec2', region_name=manifest['region'])
+                        aclresponse = aclclient.create_network_acl(
+                            DryRun=False,
+                            VpcId=pconf['vic_id'],
+                        )
+                        pconf['acl_id'] = aclresponse['NetworkAcl']['NetworkAclId']
+                        _report_print("ACL CREATE REQUESTED: '{0}' '{1}'".format(pconf['acl_id'], prefix))
+                        vic.prettyPrint(aclresponse)
+                    except Exception as err:
+                        raise ValueError(err)
+                    # busy-loop to wait for acl creation existence before tagging
+                    acl_available = {}
+                    time.sleep(float(retry_wait))
+                    while not acl_available:
+                        print "WAITING until validating acl_available_exists: '{}'".format(pconf['acl_id'])
+                        time.sleep(float(retry_wait))
+                        try:
+                            acl_available = vic.list_network_acls(acl_id=pconf['acl_id'], region=manifest['region'])
+                            if acl_available:
+                                _report_print("NEW ACL AVAILABLE FOR TAGGING: '{}'".format(pconf['acl_id']))
+                                _tag_acl(prefix=prefix, acl_description=acl_description, acl_id=pconf['acl_id'])
+                            break
+                        except:
+                            _report("Waiting for acl to become available, 'ctrl-c' to exit if this hangs too long.")
+                            pass
+
+                acl_define_list = {
+                    'inet_facing': "Allows inbound/outbound inet egress, plus our RFC1918 'global_supernet'.",
+                    'internal_only': "Allows 'vic_supernet', similar to default (private) ACL, but no outbound inet egress.",
+                    'default': acl_desc,
+                }
+                pconf['vic_acl_list'] = acl_define_list.keys()
+                vic.prettyPrint(acl_define_list)
+                # checking live again,
+                existing_acls = vic.list_network_acls(
+                    vic_id=manifest['vpc_supernet']['name'], region=manifest['region'])
+                match_list = []
+                for add_key, add_descr in acl_define_list.iteritems():
+                    for live_acl_name, live_acl_meta in existing_acls.iteritems():
+                        if live_acl_meta['TagSane']['acl_purpose'] == add_key:
+                            _report_print("ACL EXISTS FOR '{0}', PASS CREATE FOR: '{1}'".format(
+                                add_key, live_acl_name))
+                            vic.upsert_list(match_list, add_key)
+                for match in match_list:
+                    del acl_define_list[match]
+                for a_key, a_val in acl_define_list.iteritems():
+                    _acl_create_and_tag(prefix=a_key, acl_description=a_val)
+
+                # checking live for the last time,
+                existing_acls = vic.list_network_acls(
+                    vic_id=manifest['vpc_supernet']['name'], region=manifest['region'])
+                #vic.prettyPrint(existing_acls)
+
+                # TODO: we may need a scrub function if AWS changes default acl rule numbers.
+                # They have not done this in some years, (if ever), so maybe never needed.
+                # Note: ACL *creation* should not be the security source of truth, only
+                # live network autit utils can do that job reasonably.
+
+                def _acl_upsert_rule(acl_id='',
+                                     CidrBlock='', 
+                                     Egress=None,
+                                     PortRange={},
+                                     Protocol='-1',
+                                     RuleAction='deny',
+                                     RuleNumber=None):
+                    '''
+                    For more info, refer to either of these docs:
+                    http://boto3.readthedocs.io/en/latest/reference/services/ec2.html#EC2.Client.replace_network_acl_entry
+                    http://boto3.readthedocs.io/en/latest/reference/services/ec2.html#EC2.Client.create_network_acl_entry
+                    Someone should explain the UPSERT concept to the network group at Amazon.
+                    Not addressing detailed ICMP traffic types, since ICMP is internal only
+                    in current design scheme.
+                    '''
+                    try:
+                        target_acl = vic.list_network_acls(acl_id=acl_id, region=manifest['region'])
+                        target_acl = target_acl[acl_id] # strip
+                        exists = {}
+                        for entry in target_acl['Entries']:
+                            if entry['Egress'] == Egress and entry['RuleNumber'] == RuleNumber:
+                                    exists=entry
+
+                        ruleclient = boto3.client('ec2', region_name=manifest['region'])
+                        if exists:
+                            try:
+                                _report_print("REPLACING NETWORK ACL ENTRY ON '{0}': {1}".format(
+                                    acl_id, exists))
+                                ruleresponse = ruleclient.replace_network_acl_entry(
+                                    CidrBlock=CidrBlock,
+                                    DryRun=False,
+                                    Egress=Egress,
+                                    NetworkAclId=acl_id,
+                                    PortRange=PortRange,
+                                    Protocol=Protocol,
+                                    RuleAction=RuleAction,
+                                    RuleNumber=RuleNumber,
+                                )
+                                ## TODO IPv6 future, Ipv6CidrBlock='string',
+                            except Exception as err:
+                                raise ValueError(err)
+                        else:
+                            try:
+                                _report_print("CREATE NETWORK ACL ENTRY ON '{}'".format(acl_id))
+                                ruleresponse = ruleclient.create_network_acl_entry(
+                                    CidrBlock=CidrBlock,
+                                    DryRun=False,
+                                    Egress=Egress,
+                                    NetworkAclId=acl_id,
+                                    PortRange=PortRange,
+                                    Protocol=Protocol,
+                                    RuleAction=RuleAction,
+                                    RuleNumber=RuleNumber,
+                                )
+                                ## TODO IPv6 future, Ipv6CidrBlock='string',
+                            except Exception as err:
+                                raise ValueError(err)
+                        vic.prettyPrint(ruleresponse)
+
+                        #vic.prettyPrint(target_acl)
+                        print acl_id
+
+                    except Exception as err:
+                        vic.prettyPrint(target_acl)
+                        raise type(err)('_acl_upsert_rule(): {}'.format(err))
+
+                # configure ACL rules for each named ACL,
+                for acl_id, live_meta in existing_acls.iteritems():
+                    # live_meta['TagSane']['acl_purpose']
+                    time.sleep(float(retry_wait))
+
+                    #(acl_id='', CidrBlock='', Egress=None, PortRange={'From': 123, 'To': 123},
+                    # Protocol='-1', RuleAction='deny', RuleNumber=None)
+
+                    if live_meta['TagSane']['acl_purpose'] == 'default':
+                        # ingress (inbound)
+                        _acl_upsert_rule( # allows internet inbound TCP on priviliged ports
+                            acl_id=acl_id, CidrBlock='0.0.0.0/0', Egress=False,
+                            PortRange={}, Protocol='-1', RuleAction='allow', RuleNumber=80)
+                        _acl_upsert_rule( # allows other vic subnets to reach us
+                            acl_id=acl_id, CidrBlock=manifest['vpc_supernet']['netblock'], Egress=False,
+                            PortRange={}, Protocol='-1', RuleAction='allow', RuleNumber=100)
+                        # egress (outbound)
+                        _acl_upsert_rule( # prevents internet inbound packets
+                            acl_id=acl_id, CidrBlock=manifest['vpc_supernet']['netblock'], Egress=True,
+                            PortRange={}, Protocol='-1', RuleAction='allow', RuleNumber=100)
+                        _acl_upsert_rule( # allows us to reach out to internet
+                            acl_id=acl_id, CidrBlock='0.0.0.0/0', Egress=True,
+                            PortRange={}, Protocol='-1', RuleAction='allow', RuleNumber=80)
+
+                    elif live_meta['TagSane']['acl_purpose'] == 'inet_facing':
+                        # ingress (inbound)
+                        _acl_upsert_rule( # allows internet inbound TCP on priviliged ports
+                            acl_id=acl_id, CidrBlock='0.0.0.0/0', Egress=False,
+                            PortRange={}, Protocol='-1', RuleAction='allow', RuleNumber=80)
+                        _acl_upsert_rule( # allows other vic subnets to reach us
+                            acl_id=acl_id, CidrBlock=manifest['vpc_supernet']['netblock'], Egress=False,
+                            PortRange={}, Protocol='-1', RuleAction='allow', RuleNumber=100)
+                        # egress (outbound)
+                        _acl_upsert_rule( # allows us to reach other vic subnets
+                            acl_id=acl_id, CidrBlock=manifest['vpc_supernet']['netblock'], Egress=True,
+                            PortRange={}, Protocol='-1', RuleAction='allow', RuleNumber=100)
+                        _acl_upsert_rule( # allows us to reach out to internet
+                            acl_id=acl_id, CidrBlock='0.0.0.0/0', Egress=True,
+                            PortRange={}, Protocol='-1', RuleAction='allow', RuleNumber=80)
+
+                    elif live_meta['TagSane']['acl_purpose'] == 'internal_only':
+                        # ingress (inbound)
+                        _acl_upsert_rule( # allows internet inbound TCP on priviliged ports
+                            acl_id=acl_id, CidrBlock='0.0.0.0/0', Egress=False,
+                            PortRange={}, Protocol='-1', RuleAction='allow', RuleNumber=80)
+                        _acl_upsert_rule( # allows other vic subnets to reach us
+                            acl_id=acl_id, CidrBlock=manifest['vpc_supernet']['netblock'], Egress=False,
+                            PortRange={}, Protocol='-1', RuleAction='allow', RuleNumber=100)
+                        # egress (outbound)
+                        _acl_upsert_rule( # allows us to reach other vic subnets
+                            acl_id=acl_id, CidrBlock=manifest['vpc_supernet']['netblock'], Egress=True,
+                            PortRange={}, Protocol='-1', RuleAction='allow', RuleNumber=100)
+                        _acl_upsert_rule( # allows us to reach out to internet
+                            acl_id=acl_id, CidrBlock='0.0.0.0/0', Egress=True,
+                            PortRange={}, Protocol='-1', RuleAction='allow', RuleNumber=80)
+
+                # Connect the dots with our data relationships,
+                subnet_acl_map = {}
+
+                default_acl_meta = {}
+                all_associations = []
+                for acl_id, acl_meta in existing_acls.iteritems():
+                    if acl_meta['VpcId'] == pconf['vic_id']:
+                        if acl_meta['IsDefault']:
+                            default_acl_meta = acl_meta
+                    for association in acl_meta['Associations']:
+                        vic.upsert_list(all_associations, association)
+                vic.prettyPrint(default_acl_meta)
+                vic.prettyPrint(all_associations)
+
+                live_subnets = vic.list_physical_subnets(manifest['vpc_supernet']['name'], show_metadata=False)
+
+                for subnet_name, manifest_submeta in manifest['vpc_supernet']['subnets'].iteritems():
+                    subnet_acl_map[subnet_name] = {}
+                    for acl_purpose_name in pconf['vic_acl_list']:
+                        try:
+                           if manifest_submeta[acl_purpose_name]:
+                               subnet_acl_map[subnet_name]['acl_purpose'] = acl_purpose_name
+                        except:
+                               subnet_acl_map[subnet_name]['acl_purpose'] = 'default'
+                for subnet_name, subnet_meta in live_subnets.iteritems():
+                    subnet_acl_map[subnet_name]['subnet_id'] = subnet_meta['subnet_id']
+                    for acl_id, acl_meta in existing_acls.iteritems():
+                        if acl_meta['TagSane']['acl_purpose'] == subnet_acl_map[subnet_name]['acl_purpose']:
+                            subnet_acl_map[subnet_name]['acl_id'] = acl_id
+                for association_dict in all_associations:
+                    for map_name, map_dict in  subnet_acl_map.iteritems():
+                        if association_dict['SubnetId'] == map_dict['subnet_id']:
+                            subnet_acl_map[map_name]['net_acl_association_id'] = \
+                                association_dict['NetworkAclAssociationId']
+
+                _report_print('MAP GENERATED FOR SUBNET/ACL ASSOCIATION INTENT')
+                _report(str(subnet_acl_map))
+                vic.prettyPrint(subnet_acl_map)
+
+                for sub_name, map_meta in subnet_acl_map.iteritems():
+                    _report_print("ASSOCITING SUBNET '{0}' WITH '{1}' VIA '{2}'".format(
+                    map_meta['subnet_id'], map_meta['acl_id'], map_meta['net_acl_association_id']))
+                    try:
+                        assocclient = boto3.client('ec2', region_name=manifest['region'])
+                        assocresponse = assocclient.replace_network_acl_association(
+                            AssociationId=map_meta['net_acl_association_id'],
+                            DryRun=False,
+                            NetworkAclId=map_meta['acl_id'],
+                        )
+                        vic.prettyPrint(assocresponse)
+                    except Exception as err:
+                        raise ValueError(err)
+
+                _update_build_state('set_acl_complete')
+            else:
+                _report_print("'set_acl_complete' state set in '{0}''.".format(
+                    pconf['state_name']))
+        except Exception as err:
+            raise type(err)('state set_acl_complete: {}'.format(err))
+
+##############################################################################
+## ssh_bootstrap_key_complete
+        try:
+            if not 'ssh_bootstrap_key_complete' in pconf['start_build_state']:
+
+                key_name = "bootstrap.{}".format(manifest['vpc_supernet']['name'])
+                key_exists_meta = vic.list_key_pairs(vic_id=manifest['vpc_supernet']['name'])
+                # we have our key from manifest, always just delete and add it:
+                for onekey_name, onekey_dict in key_exists_meta.iteritems():
+                    if onekey_name == key_name:
+                        _report_print(
+                            "KEY EXISTS, DELETING KEY WITH FINGERPRINT '{0}' BEFORE RE-ADDING: '{1}'".format(
+                            onekey_dict['KeyFingerprint'], onekey_name))
+                        try:
+                            keyclient = boto3.client('ec2', region_name=manifest['region'])
+                            keyresponse = keyclient.delete_key_pair(
+                                KeyName=key_name,
+                                DryRun=False,
+                            )
+                            vic.prettyPrint(keyresponse)
+                        except Exception as err:
+                            raise ValueError(err)
+                try:
+                    _report_print("ADDING NEW KEY: {}".format(key_name))
+                    keyclient = boto3.client('ec2', region_name=manifest['region'])
+                    keyresponse = keyclient.import_key_pair(
+                        DryRun=False,
+                        KeyName=key_name,
+                        PublicKeyMaterial=manifest['session_ssh_pub_key'],
+                    )
+                    vic.prettyPrint(keyresponse)
+                except Exception as err:
+                    raise ValueError(err)
+
+                _update_build_state('ssh_bootstrap_key_complete')
+            else:
+                _report_print("'ssh_bootstrap_key_complete' state set in '{0}'.".format(
+                    pconf['state_name']))
+        except Exception as err:
+            raise type(err)('state ssh_bootstrap_key_complete: {}'.format(err))
+
+##############################################################################
+# default_security_groups
+
+# TODO: this entire block is *way* cumbersome and repetitive.
+# Solution: take time to make functions out of creating Security Groups,
+# which accept terse inputs in the style of firewall rulesets
+# (e.g. pf, iptables both great examples).
+
+# https://docs.aws.amazon.com/AmazonVPC/latest/UserGuide/VPC_NAT_Instance.html#NATSG
+#     Destroy the SG in vic-destroy
+
+#  - security groups handling,
+#     - list security groups per vic (viclib)
+#     - create ssh_only.vic_name.tld security group (for gateway hosts)
+        try:
+            if not 'default_security_groups' in pconf['start_build_state']:
+
+                default_sg_name = "default.{}".format(manifest['vpc_supernet']['name'])
+
+                start_sg_list = vic.list_vic_security_groups(manifest['vpc_supernet']['name'])
+                vic.prettyPrint(start_sg_list)
+# set rules for default group, (to be used by all instances, with exception
+# for inet-facing zones, and not managed by VIC tooling)
+                for sg_id, sg_meta in start_sg_list.iteritems():
+                    if not sg_meta['TagSane']:
+                        if sg_meta['GroupName'] == 'default' and len(start_sg_list) == 1:
+                            _report_print('APPARENT DEFAULT SG FOUND: {}'.format(sg_id))
+                            ec2_resource = boto3.resource('ec2', region_name=manifest['region'])
+                            try:
+                                _report_print('TAGGING DEFAULT SG: {}'.format(sg_id))
+                                sg_resource = ec2_resource.SecurityGroup(sg_id)
+                                sgrequest= sg_resource.create_tags(
+                                    DryRun=False,
+                                    Tags=[
+                                        {'Key': 'Name',
+                                            'Value': manifest['vpc_supernet']['name']},
+                                        {'Key': 'vic_create_session_id',
+                                            'Value': manifest['vic_create_session_id']},
+                                        {'Key': 'vic_class',
+                                            'Value': manifest['vic_class']},
+                                        {'Key': 'creator', 
+                                            'Value': pconf['user'],},
+                                    ]
+                                )
+                                vic.prettyPrint(sgrequest)
+                            except Exception as err:
+                                raise ValueError(err)
+                            try:
+                                _report_print('ADDING INGRESS RULES FOR DEFAULT SG: {}'.format(sg_id))
+                                sgclient = boto3.client('ec2', region_name=manifest['region'])
+                                inresponse = sgclient.authorize_security_group_ingress(
+                                    GroupId=sg_id,
+                                    IpPermissions=[
+                                        {
+                                            'FromPort': -1,
+                                            'ToPort': -1,
+                                            'IpProtocol': '-1',
+                                            'IpRanges': [
+                                                {
+                                                    'CidrIp': manifest['vpc_supernet']['netblock'],
+                                                    'Description': 'entire VIC, RFC1918 supernet'
+                                                },
+                                            ],
+                                            'Ipv6Ranges': [], # TODO IPv6 future
+                                            'PrefixListIds': [],
+                                            'UserIdGroupPairs': [],
+                                        },
+                                    ],
+                                    DryRun=False,
+                                )
+                                vic.prettyPrint(inresponse)
+                            except Exception as err:
+                                raise ValueError(err)
+                            try:
+                                _report_print('ADDING EGRESS RULES FOR DEFAULT SG: {}'.format(sg_id))
+                                sgclient = boto3.client('ec2', region_name=manifest['region'])
+                                outresponse = sgclient.authorize_security_group_egress(
+                                    DryRun=False,
+                                    GroupId=sg_id,
+                                    IpPermissions=[
+                                        {
+                                            'FromPort': -1,
+                                            'ToPort': -1,
+                                            'IpProtocol': '-1',
+                                            'IpRanges': [
+                                                {
+                                                    'CidrIp': manifest['vpc_supernet']['netblock'],
+                                                    'Description': 'entire VIC, RFC1918 supernet'
+                                                },
+                                            ],
+                                            'Ipv6Ranges': [], # TODO IPv6 future
+                                            'PrefixListIds': [],
+                                            'UserIdGroupPairs': [],
+                                        },
+                                    ],
+                                )
+                                vic.prettyPrint(outresponse)
+                            except Exception as err:
+                                raise ValueError(err)
+
+                start_sg_list = vic.list_vic_security_groups(manifest['vpc_supernet']['name'])
+                vic.prettyPrint(start_sg_list)
+# set sg for ssh-only inet access, to be used by gateway hosts.
+                # validate ssh_inet.vicname does not already exist,
+                ssh_exists = ''
+                sg_ssh_name = "ssh_inet.{}".format(manifest['vpc_supernet']['name'])
+                for sgid, sgdict in start_sg_list.iteritems():
+                    if sgdict['GroupName'] == sg_ssh_name:
+                        ssh_exists = sgid
+                if not ssh_exists:
+                # create ssh_inet SG,
+                    _report_print('CREATING SSH INGRESS SG: {}'.format(sg_ssh_name))
+                    try:
+                        createclient = boto3.client('ec2', region_name=manifest['region'])
+                        createresponse = createclient.create_security_group(
+                            Description='SSH ingress from inet',
+                            GroupName=sg_ssh_name,
+                            VpcId=vic.validate_vic_id(manifest['vpc_supernet']['name']),
+                            DryRun=False,
+                        )
+                        vic.prettyPrint(createresponse)
+                    except Exception as err:
+                        raise ValueError(err)
+                    start_sg_list = vic.list_vic_security_groups(manifest['vpc_supernet']['name'])
+                    vic.prettyPrint(start_sg_list)
+                # tag SG,
+                for sg_id, sg_meta in start_sg_list.iteritems():
+                    if not sg_meta['TagSane']:
+                        if sg_meta['GroupName'] == sg_ssh_name:
+                            _report_print('APPARENT DEFAULT SG FOUND: {}'.format(sg_id))
+                            ec2_resource = boto3.resource('ec2', region_name=manifest['region'])
+                            try:
+                                _report_print('TAGGING DEFAULT SG: {}'.format(sg_id))
+                                sg_resource = ec2_resource.SecurityGroup(sg_id)
+                                sgrequest= sg_resource.create_tags(
+                                    DryRun=False,
+                                    Tags=[
+                                        {'Key': 'Name',
+                                            'Value': sg_ssh_name},
+                                        {'Key': 'vic_create_session_id',
+                                            'Value': manifest['vic_create_session_id']},
+                                        {'Key': 'vic_class',
+                                            'Value': manifest['vic_class']},
+                                        {'Key': 'creator', 
+                                            'Value': pconf['user'],},
+                                    ]
+                                )
+                                vic.prettyPrint(sgrequest)
+                            except Exception as err:
+                                raise ValueError(err)
+                            try:
+                                _report_print('ADDING INGRESS RULE FOR SSH SG: {}'.format(sg_id))
+                                sgclient = boto3.client('ec2', region_name=manifest['region'])
+                                inresponse = sgclient.authorize_security_group_ingress(
+                                    GroupId=sg_id,
+                                    IpPermissions=[
+                                        {
+                                            'FromPort': -1,
+                                            'ToPort': -1,
+                                            'IpProtocol': '-1',
+                                            'IpRanges': [
+                                                {
+                                                    'CidrIp': manifest['vpc_supernet']['netblock'],
+                                                    'Description': 'ssh inbound on well known port'
+                                                },
+                                            ],
+                                            'Ipv6Ranges': [], # TODO IPv6 future
+                                            'PrefixListIds': [],
+                                            'UserIdGroupPairs': [],
+                                        },
+                                        {
+                                            'FromPort': 22,
+                                            'ToPort': 22, 
+                                            'IpProtocol': 'tcp',
+                                            'IpRanges': [
+                                                {
+                                                    'CidrIp': '0.0.0.0/0',
+                                                    'Description': 'Allows any hosts to reach us on ssh well known port 22.',
+                                                },
+                                            ],
+                                            'Ipv6Ranges': [], # TODO IPv6 future
+                                            'PrefixListIds': [],
+                                            'UserIdGroupPairs': [],
+                                        },
+                                        {
+                                            'FromPort': 80,
+                                            'ToPort': 80, 
+                                            'IpProtocol': 'tcp',
+                                            'IpRanges': [
+                                                {
+                                                    'CidrIp': '0.0.0.0/0',
+                                                    'Description': 'Allows any hosts to reach us on ssh custom port 80.',
+                                                },
+                                            ],
+                                            'Ipv6Ranges': [], # TODO IPv6 future
+                                            'PrefixListIds': [],
+                                            'UserIdGroupPairs': [],
+                                        },
+                                        {
+                                            'FromPort': 443,
+                                            'ToPort': 443, 
+                                            'IpProtocol': 'tcp',
+                                            'IpRanges': [
+                                                {
+                                                    'CidrIp': '0.0.0.0/0',
+                                                    'Description': 'Allows any hosts to reach us on ssh custom port 443.',
+                                                },
+                                            ],
+                                            'Ipv6Ranges': [], # TODO IPv6 future
+                                            'PrefixListIds': [],
+                                            'UserIdGroupPairs': [],
+                                        },
+                                    ],
+                                    DryRun=False,
+                                )
+                                vic.prettyPrint(inresponse)
+                            except Exception as err:
+                                raise ValueError(err)
+                            try:
+                                _report_print('ADDING EGRESS RULE FOR SSH SG: {}'.format(sg_id))
+                                sgclient = boto3.client('ec2', region_name=manifest['region'])
+                                outresponse = sgclient.authorize_security_group_egress(
+                                    DryRun=False,
+                                    GroupId=sg_id,
+                                    IpPermissions=[
+                                        {
+                                            'FromPort': -1,
+                                            'ToPort': -1,
+                                            'IpProtocol': '-1',
+                                            'IpRanges': [
+                                                {
+                                                    'CidrIp': manifest['vpc_supernet']['netblock'],
+                                                    'Description': 'Ensures outbound to all vic local net.'
+                                                },
+                                            ],
+                                            'Ipv6Ranges': [], # TODO IPv6 future
+                                            'PrefixListIds': [],
+                                            'UserIdGroupPairs': [],
+                                        },
+                                    ],
+                                )
+                                vic.prettyPrint(outresponse)
+                            except Exception as err:
+                                raise ValueError(err)
+                            start_sg_list = vic.list_vic_security_groups(manifest['vpc_supernet']['name'])
+
+# set sg for data/rds layer, (hosts or RDS objects)
+                # validate data_rds.vicname SG does not already exist,
+                drds_exists = ''
+                sg_drds_name = "data_rds.{}".format(manifest['vpc_supernet']['name'])
+                for sgid, sgdict in start_sg_list.iteritems():
+                    if sgdict['GroupName'] == sg_drds_name:
+                        drds_exists = sgid
+                if not drds_exists:
+                # create ssh_inet SG,
+                    _report_print('CREATING DATA/RDS INGRESS SG: {}'.format(sg_ssh_name))
+                    try:
+                        createclient = boto3.client('ec2', region_name=manifest['region'])
+                        createresponse = createclient.create_security_group(
+                            Description='DATA RDS security group',
+                            GroupName=sg_drds_name,
+                            VpcId=vic.validate_vic_id(manifest['vpc_supernet']['name']),
+                            DryRun=False,
+                        )
+                        vic.prettyPrint(createresponse)
+                    except Exception as err:
+                        raise ValueError(err)
+                    start_sg_list = vic.list_vic_security_groups(manifest['vpc_supernet']['name'])
+                    vic.prettyPrint(start_sg_list)
+                # tag SG,
+                for sg_id, sg_meta in start_sg_list.iteritems():
+                    if not sg_meta['TagSane']:
+                        if sg_meta['GroupName'] == sg_drds_name:
+                            _report_print('APPARENT DATA/RDS SG FOUND: {}'.format(sg_id))
+                            ec2_resource = boto3.resource('ec2', region_name=manifest['region'])
+                            try:
+                                _report_print('TAGGING DB/RDS SG: {}'.format(sg_id))
+                                sg_resource = ec2_resource.SecurityGroup(sg_id)
+                                sgrequest= sg_resource.create_tags(
+                                    DryRun=False,
+                                    Tags=[
+                                        {'Key': 'Name',
+                                            'Value': sg_drds_name},
+                                        {'Key': 'vic_create_session_id',
+                                            'Value': manifest['vic_create_session_id']},
+                                        {'Key': 'vic_class',
+                                            'Value': manifest['vic_class']},
+                                        {'Key': 'creator', 
+                                            'Value': pconf['user'],},
+                                    ]
+                                )
+                                vic.prettyPrint(sgrequest)
+                            except Exception as err:
+                                raise ValueError(err)
+                            try:
+                                _report_print('ADDING INGRESS RULE FOR DATA/RDS SG: {}'.format(sg_id))
+                                sgclient = boto3.client('ec2', region_name=manifest['region'])
+                                inresponse = sgclient.authorize_security_group_ingress(
+                                    GroupId=sg_id,
+                                    IpPermissions=[
+                                        {
+                                            'FromPort': -1,
+                                            'ToPort': -1,
+                                            'IpProtocol': '-1',
+                                            'IpRanges': [
+                                                {
+                                                    'CidrIp': manifest['vpc_supernet']['netblock'],
+                                                    'Description': 'Allows inbound from VPC subnets.'
+                                                },
+                                            ],
+                                            'Ipv6Ranges': [], # TODO IPv6 future
+                                            'PrefixListIds': [],
+                                            'UserIdGroupPairs': [],
+                                        },
+                                    ],
+                                    DryRun=False,
+                                )
+                                vic.prettyPrint(inresponse)
+                            except Exception as err:
+                                raise ValueError(err)
+                            try:
+                                _report_print('ADDING EGRESS RULE FOR DATA/RDS SG: {}'.format(sg_id))
+                                sgclient = boto3.client('ec2', region_name=manifest['region'])
+                                outresponse = sgclient.authorize_security_group_egress(
+                                    DryRun=False,
+                                    GroupId=sg_id,
+                                    IpPermissions=[
+                                        {
+                                            'FromPort': -1,
+                                            'ToPort': -1,
+                                            'IpProtocol': '-1',
+                                            'IpRanges': [
+                                                {
+                                                    'CidrIp': manifest['vpc_supernet']['netblock'],
+                                                    'Description': 'All outbound.'
+                                                },
+                                            ],
+                                            'Ipv6Ranges': [], # TODO IPv6 future
+                                            'PrefixListIds': [],
+                                            'UserIdGroupPairs': [],
+                                        },
+                                    ],
+                                )
+                                vic.prettyPrint(outresponse)
+                            except Exception as err:
+                                raise ValueError(err)
+
+# set sg for NAT layer, (hosts or Gateway objects)
+                # validate nat.vicname SG does not already exist,
+                nat_exists = ''
+                sg_nat_name = "nat.{}".format(manifest['vpc_supernet']['name'])
+                for sgid, sgdict in start_sg_list.iteritems():
+                    if sgdict['GroupName'] == sg_nat_name:
+                        nat_exists = sgid
+                if not nat_exists:
+                # create nat SG,
+                    _report_print('CREATING NAT INGRESS SG: {}'.format(sg_ssh_name))
+                    try:
+                        createclient = boto3.client('ec2', region_name=manifest['region'])
+                        createresponse = createclient.create_security_group(
+                            Description='NAT security group',
+                            GroupName=sg_nat_name,
+                            VpcId=vic.validate_vic_id(manifest['vpc_supernet']['name']),
+                            DryRun=False,
+                        )
+                        vic.prettyPrint(createresponse)
+                    except Exception as err:
+                        raise ValueError(err)
+                    start_sg_list = vic.list_vic_security_groups(manifest['vpc_supernet']['name'])
+                    vic.prettyPrint(start_sg_list)
+                # tag SG,
+                for sg_id, sg_meta in start_sg_list.iteritems():
+                    if not sg_meta['TagSane']:
+                        if sg_meta['GroupName'] == sg_nat_name:
+                            _report_print('APPARENT NAT SG FOUND: {}'.format(sg_id))
+                            ec2_resource = boto3.resource('ec2', region_name=manifest['region'])
+                            try:
+                                _report_print('TAGGING NAT SG: {}'.format(sg_id))
+                                sg_resource = ec2_resource.SecurityGroup(sg_id)
+                                sgrequest= sg_resource.create_tags(
+                                    DryRun=False,
+                                    Tags=[
+                                        {'Key': 'Name',
+                                            'Value': sg_nat_name},
+                                        {'Key': 'vic_create_session_id',
+                                            'Value': manifest['vic_create_session_id']},
+                                        {'Key': 'vic_class',
+                                            'Value': manifest['vic_class']},
+                                        {'Key': 'creator', 
+                                            'Value': pconf['user'],},
+                                    ]
+                                )
+                                vic.prettyPrint(sgrequest)
+                            except Exception as err:
+                                raise ValueError(err)
+                            try:
+                                _report_print('ADDING INGRESS RULE FOR NAT SG: {}'.format(sg_id))
+                                sgclient = boto3.client('ec2', region_name=manifest['region'])
+                                inresponse = sgclient.authorize_security_group_ingress(
+                                    GroupId=sg_id,
+                                    IpPermissions=[
+                                        {
+                                            'FromPort': -1,
+                                            'ToPort': -1,
+                                            'IpProtocol': '-1',
+                                            'IpRanges': [
+                                                {
+                                                    'CidrIp': manifest['vpc_supernet']['netblock'],
+                                                    'Description': 'Allows inbound from VPC subnets.'
+                                                },
+                                            ],
+                                            'Ipv6Ranges': [], # TODO IPv6 future
+                                            'PrefixListIds': [],
+                                            'UserIdGroupPairs': [],
+                                        },
+                                    ],
+                                    DryRun=False,
+                                )
+                                vic.prettyPrint(inresponse)
+                            except Exception as err:
+                                raise ValueError(err)
+                            # Note: outbound 0.0.0.0/0 allproto is set by default creation
+                            try:
+                                _report_print('ADDING EGRESS RULE FOR NAT SG: {}'.format(sg_id))
+                                sgclient = boto3.client('ec2', region_name=manifest['region'])
+                                outresponse = sgclient.authorize_security_group_egress(
+                                    DryRun=False,
+                                    GroupId=sg_id,
+                                    IpPermissions=[
+                                        {
+                                            'FromPort': -1,
+                                            'ToPort': -1,
+                                            'IpProtocol': '-1',
+                                            'IpRanges': [
+                                                {
+                                                    'CidrIp': manifest['vpc_supernet']['netblock'],
+
+                                                    'Description': 'Redundant allow for NAT.'
+                                                },
+                                            ],
+                                            'Ipv6Ranges': [], # TODO IPv6 future
+                                            'PrefixListIds': [],
+                                            'UserIdGroupPairs': [],
+                                        },
+                                    ],
+                                )
+                                vic.prettyPrint(outresponse)
+                            except Exception as err:
+                                raise ValueError(err)
+
+                _update_build_state('default_security_groups')
+            else:
+                _report_print("'default_security_groups' state set in '{0}'.".format(
+                    pconf['state_name']))
+        except Exception as err:
+            raise type(err)('state default_security_groups: {}'.format(err))
+
+##############################################################################
+## nat_instances_complete
+## vic.list_nat_amis(region=region)
+
+        try:
+
+            if not 'nat_instances_complete' in pconf['start_build_state']:
+
+                nat_amis = vic.list_nat_amis(region=manifest['region'])
+                ami_nat = nat_amis.keys()[0]
+                vic.prettyPrint(nat_amis)
+
+                # Place NAT Gateway in each 'inet_facing' network
+
+                wan_nets = []
+                pconf['sg_nat_id'] = "nat.{}".format(manifest['vpc_supernet']['name'])
+
+                pconf['wan_physical_nets'] = {}
+                for _sub_id, _sub_meta in  manifest['vpc_supernet']['subnets'].iteritems():
+                    if _sub_meta['inet_facing'] == True:
+                        pconf['wan_physical_nets'][_sub_id] = _sub_meta
+                vic.prettyPrint(pconf['wan_physical_nets'])
+
+                pconf['sg_meta'] = vic.list_vic_security_groups(
+                    vic_or_net_name=manifest['vpc_supernet']['name'])
+                ##vic.prettyPrint(pconf['sg_meta'])
+
+                key_name = "bootstrap.{}".format(manifest['vpc_supernet']['name'])
+                #key_exists_meta = vic.list_key_pairs(vic_id=manifest['vpc_supernet']['name'
+
+
+                physical_nets = vic.list_physical_subnets(
+                    manifest['vpc_supernet']['name'], show_metadata=False)
+                vic.prettyPrint(physical_nets)
+
+
+                created_nat_hosts = []
+                for _netname, _netmeta in pconf['wan_physical_nets'].iteritems():
+                    name = "nat.{}".format(_netname)
+                    _report_print("LIGHTING NAT INSTANCE: {}".format(name))
+                    _taglist = [
+                                {'Key': 'Name',
+                                    'Value': name},
+                                {'Key': 'vic_create_session_id',
+                                    'Value': manifest['vic_create_session_id']},
+                                {'Key': 'vic_class',
+                                    'Value': manifest['vic_class']},
+                                {'Key': 'creator',
+                                    'Value': pconf['user'],},
+                                {'Key': 'vic_create_special',
+                                    'Value': 'nat',},
+                               ]
+                    try:
+                        natresource = boto3.resource('ec2', region_name=manifest['region'])
+                        natreturn = natresource.create_instances(
+                                ImageId=ami_nat,
+                                MinCount=1,
+                                MaxCount=1,
+                                InstanceType='m5d.large', # Up to 10 Gigabit
+                                KeyName=key_name,
+                                SubnetId=physical_nets[_netname]['subnet_id'],
+                                TagSpecifications=[
+                                    {
+                                        'ResourceType': 'instance',
+                                        'Tags': _taglist,
+                                    },
+                                ],
+                        )
+                    except Exception as err:
+                        raise ValueError(err)
+                    _report_print("INSTANCE CREATED: {}".format(natreturn))
+                    for oneinstance in natreturn:
+                        vic.upsert_list(created_nat_hosts, oneinstance)
+
+                vic.prettyPrint(created_nat_hosts)
+                # TODO: worksvic need to find and write down public IP addresses of NAT egress.
+                _update_build_state('nat_instances_complete')
+            else:
+                _report_print("'nat_instances_complete' state set in '{0}'.".format(
+                    pconf['state_name']))
+        except Exception as err:
+            raise type(err)('state nat_instances_complete: {}'.format(err))
+
+##############################################################################
+## wan_dest_response_checks_complete
+
+# iterates through all instances created in WAN to this point, ensuring they have
+# destination response check disabled, to behave as expected.
+
+        try:
+            if not 'wan_dest_response_checks_complete' in pconf['start_build_state']:
+                # we should only have one,
+                inet_facing_logical = "{0}.{1}".format(
+                    manifest['inet_facing_logical_nets'][0][7:], 
+                    manifest['vpc_supernet']['name'])
+
+                vic_instances = vic.list_vic_instances(
+                    vic_name=manifest['vpc_supernet']['name'],
+                    logical_net=inet_facing_logical)
+
+                for pkey, pmeta in vic_instances.iteritems():
+                    _report_print("SOURCE DESTINATION CHECK FALSE INET-FACING INSTANCE: {} {}".format(
+                        pkey, inet_facing_logical))
+                    _quickresp = set_dest_response_check(pkey, False)
+                    _report_print(str(_quickresp))
+
+                _update_build_state('wan_dest_response_checks_complete')
+            else:
+                _report_print("'wan_dest_response_checks_complete' state set in '{0}'.".format(
+                    pconf['state_name']))
+        except Exception as err:
+            raise type(err)('state wan_dest_response_checks_complete: {}'.format(err))
+
+##############################################################################
+## nat_routing_complete
+## TODO: worksvic
+
+        try:
+            if not 'nat_routing_complete' in pconf['start_build_state']:
+                print 'NAT routing roundup'
+
+                def _tag_thirdrail(rtb_id, thirdrail_name, aztag=None):
+                    '''Just tagging.'''
+                    if not aztag:
+                        rtb_availability_zone = "multi_inet"
+                    else:
+                        rtb_availability_zone = aztag
+                    try:
+                        _report_print("ITEMVICENT TAGGING ROUTE TABLE: '{0}' '{1}'".format(
+                            rtb_id, thirdrail_name))
+                        mrtb_name="{0}.{1}".format(thirdrail_name, manifest['vpc_supernet']['name'])
+
+                        mrtb_ec2 = boto3.resource('ec2')
+                        main_route_table = mrtb_ec2.RouteTable(rtb_id)
+                        mrtb_tag_response = main_route_table.create_tags(
+                            DryRun=False,
+                            Tags=[
+                                {'Key': 'Name',
+                                    'Value': mrtb_name},
+                                {'Key': 'vic_create_session_id',
+                                    'Value': manifest['vic_create_session_id']},
+                                {'Key': 'vic_class',
+                                    'Value': manifest['vic_class']},
+                                {'Key': 'creator',
+                                    'Value': manifest['init_user']},
+                                {'Key': 'thirdrail',
+                                    'Value': thirdrail_name},
+                                {'Key': 'availability_zone',
+                                    'Value': rtb_availability_zone},
+                            ]
+                        )
+                        _report_print(str(vic.prettyPrint(mrtb_tag_response)))
+                    except Exception as err:
+                        raise ValueError(err)
+
+                def _create_and_tag_rtb_blank(thirdrail_name, aztag=None):
+                    '''Creates, tags, leaves routes untouched.'''
+                    try:
+                        _report_print("CREATING BLANK ROUTE TABLE: '{0}' '{1}'".format(
+                            thirdrail_name, vpc_id))
+                        rtb_create_client = boto3.client('ec2')
+                        rtb_create_response = rtb_create_client.create_route_table(
+                            DryRun=False,
+                            VpcId=vpc_id
+                        )
+                        _report_print(str(vic.prettyPrint(rtb_create_response)))
+                        rtb_id = rtb_create_response['RouteTable']['RouteTableId']
+                        _tag_thirdrail(rtb_id, thirdrail_name, aztag) # watch out, nesting without breadcrumbs...
+                    except Exception as err:
+                        raise ValueError(err)
+
+                # we'll grab this again later,
+                route_tables = vic.list_route_tables(
+                    vic_id=manifest['vpc_supernet']['name'], region=manifest['region'])
+                _report(str(vic.prettyPrint(route_tables)))
+
+                vpc_id = vic.validate_vic_id(manifest['vpc_supernet']['name'])
+
+                manifest_inet_facing = {}
+                # Make a dict for each az our vic is using,
+                # containing dict of subnet id's in this az,
+                # excluding inet-facing subnets.
+                manifest_internal_nets = {}
+                for net_name, net_meta in manifest['vpc_supernet']['subnets'].iteritems():
+                    _rtb_exists = False
+                    if net_meta['inet_facing']:
+                        manifest_inet_facing[net_name] = net_meta
+                        thirdrail_name = '{}.rtb'.format(net_meta['availability_zone'])
+                        for live_rtb_name, live_rtb_meta in route_tables.iteritems():
+                            if 'thirdrail' in live_rtb_meta['TagSane']:
+                                if live_rtb_meta['TagSane']['thirdrail'] == thirdrail_name:
+                                    _rtb_exists = True
+                                    _tag_thirdrail(live_rtb_name, thirdrail_name, net_meta['availability_zone'])
+                        if not _rtb_exists:
+                            _create_and_tag_rtb_blank(thirdrail_name, net_meta['availability_zone'])
+                    else:
+                        if not net_meta['availability_zone'] in manifest_internal_nets:
+                            manifest_internal_nets[net_meta['availability_zone']] = {}
+                        manifest_internal_nets[net_meta['availability_zone']][net_name] = \
+                            vic.validate_subnet_id(net_name)
+                _report_print(str(vic.prettyPrint(manifest_internal_nets)))
+
+                # fetch our nat instances,
+                vic_instances = vic.list_vic_instances(
+                    vic_name=manifest['vpc_supernet']['name'], phys_subnet='', logical_net='',)
+                # strip the hosts down for 'vic_create_special' == 'nat'
+                nat_instances = {}
+                for ins_id, ins_meta in vic_instances.iteritems():
+                    if ins_meta['TagSane']['vic_create_special'] == 'nat':
+                        nat_instances[ins_id] = ins_meta
+                _report(str(vic.prettyPrint(nat_instances)))
+
+                route_tables = vic.list_route_tables(
+                    vic_id=manifest['vpc_supernet']['name'], region=manifest['region'])
+                _report(str(vic.prettyPrint(route_tables)))
+
+                def create_route_nat(rtb_id, route_string, instance_id):
+                    _report_print('CREATING ROUTE: {0} {1} {2}'.format(rtb_id, route_string, instance_id))
+                    try:
+                        route_client = boto3.client('ec2')
+                        route_response = route_client.create_route(
+                            DestinationCidrBlock=route_string,
+                            DryRun=False,
+                            InstanceId=instance_id,
+                            RouteTableId=rtb_id,
+                            #DestinationIpv6CidrBlock='string', # TODO ipv6
+                            #EgressOnlyInternetGatewayId='string', # TODO ipv6
+                        )
+                        _report_print(str(route_response))
+                    except Exception as err:
+                        raise ValueError(err)
+
+                def attach_rtb_subnet(rtb_id, subnet_id):
+                    _report_print('ATTACHING ROUTE TABLE TO SUBNET: {0} {1}'.format(rtb_id, subnet_id))
+                    try:
+                        attach_client = boto3.client('ec2')
+                        attach_response = attach_client.associate_route_table(
+                            DryRun=False,
+                            RouteTableId=rtb_id,
+                            SubnetId=subnet_id
+                        )
+                        _report_print(str(attach_response))
+                    except Exception as err:
+                        raise ValueError(err)
+
+                for nat_ins_id, nat_ins_meta in nat_instances.iteritems():
+                    # Attach route 0.0.0.0/0 to nat instance corresponding to AZ
+                    _az = nat_ins_meta['Placement']['AvailabilityZone']
+                    target_rtb = None
+                    for rtb_id, rtb_meta in route_tables.iteritems():
+                        if rtb_meta['Main']:
+                            _tag_thirdrail(rtb_id, 'inet.rtb')
+                        if 'availability_zone' in rtb_meta['TagSane']:
+                            if rtb_meta['TagSane']['availability_zone'] == _az:
+                                target_rtb = rtb_id
+                    _route_set = False
+                    for logical_subnet, subnet_id in manifest_internal_nets[_az].iteritems():
+                        if not _route_set:
+                            create_route_nat(target_rtb, '0.0.0.0/0', nat_ins_id)
+                            _route_set = True
+                        # while we're iterating subnets for an AZ
+                        attach_rtb_subnet(target_rtb, subnet_id)
+
+                ## SLEEP to let route changes coalesce
+                _report_print("SLEEPING 10 SECONDS WHILE ROUTES COALESCE")
+                time.sleep(10)
+                # TODO: worksvic need to find and write down public IP addresses of NAT egress.
+                _update_build_state('nat_routing_complete')
+            else:
+                _report_print("'nat_routing_complete' state set in '{0}'.".format(
+                    pconf['state_name']))
+        except Exception as err:
+            raise type(err)('state nat_routing_complete: {}'.format(err))
+
+##############################################################################
+## initial_instances_complete
+## TODO: break into separate/idemvicent utility (vic-server, when completed)
+##  - vic-server, generalized tool, use it specifically here
+
+        try:
+            if not 'initial_instances_complete' in pconf['start_build_state']:
+                # apologies in advance if you're reading the following
+                # code, this is not intended to be kept:
+#Launch gaeway hosts in each inet_facing_logical_nets
+                logic_gateway = []
+                hosts_gateway = {}
+                logic_launchtest = []
+                hosts_launchtest = {}
+
+                pconf['sg_meta'] = vic.list_vic_security_groups(
+                    vic_or_net_name=manifest['vpc_supernet']['name'])
+                pconf['sg_default_name'] = "default"
+                pconf['sg_ssh_name'] = "ssh_inet.{}".format(manifest['vpc_supernet']['name'])
+
+                for sname, smeta in pconf['sg_meta'].iteritems():
+                    if smeta['GroupName'] == pconf['sg_default_name']:
+                        pconf['sg_default_id'] = sname
+                    elif smeta['GroupName'] == pconf['sg_ssh_name']:
+                        pconf['sg_ssh_id'] = sname
+
+                physical_nets = vic.list_physical_subnets(
+                    manifest['vpc_supernet']['name'], show_metadata=False)
+
+                for _ful_inet_name in manifest['inet_facing_logical_nets']:
+                    if _ful_inet_name.startswith('subnet_'):
+                        vic.upsert_list(logic_gateway, str(_ful_inet_name[7:]))
+
+                for _ful_inet_name in manifest['internal_only_logical_nets']:
+                    if _ful_inet_name.startswith('subnet_'):
+                        vic.upsert_list(logic_launchtest, str(_ful_inet_name[7:]))
+
+                print manifest['internal_only_logical_nets']
+                for _physnet, _physmeta in physical_nets.iteritems():
+                    name = "test.{}".format(_physnet)
+                    subtemp = {}
+                    _hostlogical = _physnet.split('.', 2)[1]
+                    if _hostlogical in logic_gateway:
+                        name = "gateway.{}".format(_physnet)
+                        subtemp['subnet_name'] = _physnet
+                        subtemp['subnet_id'] = _physmeta['subnet_id']
+                        _taglist = [
+                                    {'Key': 'Name',
+                                        'Value': name},
+                                    {'Key': 'vic_create_session_id',
+                                        'Value': manifest['vic_create_session_id']},
+                                    {'Key': 'vic_class',
+                                        'Value': manifest['vic_class']},
+                                    {'Key': 'creator',
+                                        'Value': pconf['user'],},
+                                    {'Key': 'vic_create_special',
+                                        'Value': 'gateway',},
+                                   ]
+                        subtemp['tags'] = _taglist
+                        hosts_gateway[name] = subtemp
+                    else:
+                        subtemp['subnet_name'] = _physnet
+                        subtemp['subnet_id'] = _physmeta['subnet_id']
+                        _taglist = [
+                                    {'Key': 'Name',
+                                        'Value': name},
+                                    {'Key': 'vic_create_session_id',
+                                        'Value': manifest['vic_create_session_id']},
+                                    {'Key': 'vic_class',
+                                        'Value': manifest['vic_class']},
+                                    {'Key': 'creator',
+                                        'Value': pconf['user'],},
+                                    {'Key': 'vic_create_special',
+                                        'Value': 'networkingtest',},
+                                   ]
+                        subtemp['tags'] = _taglist
+                        hosts_launchtest[name] = subtemp
+
+                _report_print("GATEWAY HOSTS LIST: {}".format(hosts_gateway))
+                #vic.prettyPrint(hosts_gateway)
+                _report_print("TEST HOSTS LIST: {}".format(hosts_launchtest))
+                #vic.prettyPrint(hosts_launchtest)
+
+#Load and use temporary ssh key
+                key_name = "bootstrap.{}".format(manifest['vpc_supernet']['name'])
+                #key_exists_meta = vic.list_key_pairs(vic_id=manifest['vpc_supernet']['name'])
+
+#Find our AMI,
+                disk_type = 'gp2'
+                # hvm-ssd - generic ssd
+                ami_list = vic.list_default_amis(region=manifest['region'])
+                vic.prettyPrint(ami_list)
+                ami = ''
+                for _ami, _ami_meta in ami_list.iteritems():
+                    # Unreal AWS, Unreal.
+                    try:
+                        for _disk in _ami_meta['BlockDeviceMappings']:
+                            if _disk['Ebs']['VolumeType'] == disk_type:
+                                ami = _ami
+                                ami_meta = _ami_meta
+                    except:
+                        pass
+                _report_print("AMI SELECTED FOR REGION '{0}': {1}".format(manifest['region'], ami))
+
+                try:
+                    created_gateways = []
+                    insresource = boto3.resource('ec2', region_name=manifest['region'])
+                    for in_name, in_meta in hosts_gateway.iteritems():
+                        insreturn= insresource.create_instances(
+                                ImageId=ami,
+                                MinCount=1,
+                                MaxCount=1,
+                                InstanceType='t2.micro',
+                                KeyName=key_name,
+                                SubnetId=in_meta['subnet_id'],
+                                TagSpecifications=[
+                                    {
+                                        'ResourceType': 'instance',
+                                        'Tags': in_meta['tags'],
+                                    },
+                                ],
+                        )
+                        _report_print("INSTANCE CREATED: {}".format(insreturn))
+                        for oneinstance in insreturn:
+                            vic.upsert_list(created_gateways, oneinstance)
+                except Exception as err:
+                    raise ValueError(err)
+
+                for one_gateway in created_gateways:
+                    _report_print("INSTANCE SECURITY GROUP REPLACEMENT FOR '{}'".format(one_gateway))
+                    vic.prettyPrint(one_gateway.security_groups)
+                    if not pconf['sg_ssh_id'] in one_gateway.security_groups:
+                        one_gateway.modify_attribute(
+                            Groups=[pconf['sg_ssh_id']],
+                            DryRun=False,
+                        )
+                    vic.prettyPrint(one_gateway.security_groups)
+                    print one_gateway.public_dns_name
+                    print one_gateway.public_ip_address
+                    print vic.aws_tags_dict(one_gateway.tags)
+
+                try:
+                    insresource = boto3.resource('ec2', region_name=manifest['region'])
+                    for in_name, in_meta in hosts_launchtest.iteritems():
+                        insreturn= insresource.create_instances(
+                                ImageId=ami,
+                                MinCount=1,
+                                MaxCount=1,
+                                InstanceType='t2.micro',
+                                KeyName=key_name,
+                                SubnetId=in_meta['subnet_id'],
+                                TagSpecifications=[
+                                    {
+                                        'ResourceType': 'instance',
+                                        'Tags': in_meta['tags'],
+                                    },
+                                ],
+                        )
+                        # TODO: talk to @ianw
+                        #UserData='string', # bootstrap
+                        #IamInstanceProfile={
+                        #    'Arn': 'string',
+                        #    'Name': 'string'
+                        #}, # talk to @ianw
+                        _report_print("INSTANCE CREATED: {}".format(insreturn))
+                except Exception as err:
+                    raise ValueError(err)
+
+                # TODO: worksvic need to find and write down public IP addresses to reach gateways.
+                _update_build_state('initial_instances_complete')
+            else:
+                _report_print("'initial_instances_complete' state set in '{0}'.".format(
+                    pconf['state_name']))
+        except Exception as err:
+            raise type(err)('state initial_instances_complete: {}'.format(err))
+
+##############################################################################
+# default_s3_buckets
+
+#https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/ec2.html#EC2.Client.create_vpc_endpoint
+
+        try:
+            if not 'default_s3_buckets' in pconf['start_build_state']:
+                vic_name = manifest['vpc_supernet']['name']
+                live_target_buckets = vic.list_vics_s3_buckets(vic_id=vic_name)
+                _report_print("BUCKETS LIVE: {}".format(live_target_buckets))
+
+                all_logical_buckets = []
+                for logicalbucket in pconf['logical_bucket_names'].strip().split(' '):
+                    vic.upsert_list(all_logical_buckets, logicalbucket)
+                for logicalbucket in pconf['signed_bucket_names'].strip().split(' '):
+                    vic.upsert_list(all_logical_buckets, logicalbucket)
+                signed_logical_buckets = []
+                for logicalbucket in pconf['signed_bucket_names'].strip().split(' '):
+                    vic.upsert_list(signed_logical_buckets, logicalbucket)
+                _report_print("BUCKETS COMPLETE LIST: {}".format(all_logical_buckets))
+                _report_print("SIGNED BUCKETS COMPLETE LIST: {}".format(signed_logical_buckets))
+
+                _live_logical_list = []
+                for live_bucket_name, live_bucket_meta in live_target_buckets.iteritems():
+                    vic.upsert_list(_live_logical_list, live_bucket_meta['Tags']['bucket_fqdn'])
+
+                unique_id = str(puidgen(seed=vic_name))[:7]
+                _report_print("UID sha1: {}".format(unique_id))
+
+                buckets_map = {}
+                # TODO future stub: move the config look into the manifest,
+                # but generate bucket_physical_name using UID in each run.
+                for named in all_logical_buckets:
+                    buckets_map[named] = {}
+                    buckets_map[named]['logical'] = named # belt and suspenders
+                    buckets_map[named]['bucket_physical_name'] = \
+                            "{0}.{1}.{2}".format(
+                                 unique_id,
+                                 named,
+                                 manifest['vpc_supernet']['name'].replace('_', ''),
+                            )
+
+                    buckets_map[named]['bucket_fqdn'] = \
+                            "{0}.{1}".format(
+                                 named,
+                                 manifest['vpc_supernet']['name'],
+                            )
+                    if named in signed_logical_buckets:
+                        buckets_map[named]['enable_signed'] = True
+                    else:
+                        buckets_map[named]['enable_signed'] = False
+
+
+                _report_print("UID-GENERATED MANIFEST OF VIC BUCKETS TO CREATE")
+                _report_print(str(buckets_map))
+                _report_print("LIVE BUCKETS BELONGING TO THIS VIC: {}".format(live_target_buckets))
+
+                signed_endpoint_fqdn = []
+
+                for one_bucket in buckets_map.keys(): 
+                    # Skip create if logical bucket exists,
+                    if buckets_map[one_bucket]['bucket_fqdn'] in _live_logical_list:
+                        _exists_physical = []
+                        _report_print(
+                            "BUCKET ALREADY EXISTS, TAG 'bucket_fqdn': {}".format(
+                                buckets_map[one_bucket]['bucket_fqdn'],
+                        ))
+                    else:
+                        try:
+                            s3client = boto3.client('s3')
+                            s3_create_response = s3client.create_bucket(
+                                Bucket=buckets_map[one_bucket]['bucket_physical_name'],
+                                ACL='private',
+                                CreateBucketConfiguration={'LocationConstraint': manifest['region']},
+                                #GrantFullControl='string',
+                                #GrantRead='string',
+                                #GrantReadACP='string',
+                                #GrantWrite='string',
+                                #GrantWriteACP='string'
+                            )
+                            vic.prettyPrint(s3_create_response)
+                            # Tag followup, (cannot tag on create),
+                            s3_tagresponse = s3client.put_bucket_tagging(
+                                Bucket=buckets_map[one_bucket]['bucket_physical_name'],
+                                Tagging={
+                                    'TagSet': [
+
+                                        {'Key': 'vic_id', 'Value': vic_name,},
+                                        {'Key': 'vic_class', 'Value': manifest['vic_class'],},
+                                        {'Key': 'vic_create_session_id',
+                                         'Value': manifest['vic_create_session_id'],},
+                                        {'Key': 'bucket_fqdn',
+                                         'Value': buckets_map[one_bucket]['bucket_fqdn'],},
+                                        {'Key': 'bucket_physical_name', 
+                                         'Value': buckets_map[one_bucket]['bucket_physical_name'],},
+                                        {'Key': 'enable_signed', 
+                                         'Value': str(buckets_map[one_bucket]['enable_signed']),},
+                                        {'Key': 'logical', 
+                                         'Value': buckets_map[one_bucket]['logical'],},
+                                        {'Key': 'creator', 
+                                         'Value': pconf['user'],},
+
+                                    ]
+                                }
+                            )
+                        except Exception as err:
+                            raise ValueError(err)
+
+                _update_build_state('default_s3_buckets')
+            else:
+                _report_print("'default_s3_buckets' state set in '{0}'.".format(
+                    pconf['state_name']))
+        except Exception as err:
+            raise type(err)('state default_s3_buckets: {}'.format(err))
+
+##############################################################################
+# s3_vpc_endpoint
+
+        try:
+            if not 's3_vpc_endpoint' in pconf['start_build_state']:
+                vic_name = manifest['vpc_supernet']['name']
+                existing_endp = vic.list_vpc_endpoints(vic_id=vic_name, region=manifest['region'])
+                #vic.prettyPrint(existing_endp)
+
+                s3_exists = {}
+                for endp, endmeta in existing_endp.iteritems():
+                    # this AWS namespace is region specific but appears rational,
+                    if endmeta['ServiceName'].endswith('s3'):
+                        s3_exists[endp] = endmeta
+
+                vic.prettyPrint(s3_exists)
+                if not s3_exists:
+                    _report_print("No s3 endpoint for '{}', creating...".format(vic_name))
+                    rtables = vic.list_route_tables(vic_id=vic_name)
+                    rtb_ids = rtables.keys()
+                    _report_print("Adding to all route tables associated with this vic: {}".format(
+                        rtb_ids))
+                    _available_endp = vic.list_available_endpoints(region=manifest['region'], product='s3')
+                    if not len(_available_endp) > 1: 
+                        s3_available_servicename = _available_endp[manifest['region']].keys()[0]
+                    _report_print("S3 endpoint service name for this region: {}".format(s3_available_servicename))
+                    try:
+                       endp_client = boto3.client('ec2', region_name=manifest['region'])
+                       endp_response = endp_client.create_vpc_endpoint(
+                           DryRun=False,
+                           VpcEndpointType='Gateway',
+                           VpcId=vic.validate_vic_id(vic_name),
+                           ServiceName=s3_available_servicename,
+                           RouteTableIds=rtb_ids,
+                           #PolicyDocument='string', # TODO: may need to drive from local template?
+                       )
+                       vic.prettyPrint(endp_response)
+
+                    except Exception as err:
+                        raise ValueError(err)
+
+                _update_build_state('s3_vpc_endpoint')
+            else:
+                _report_print("'s3_vpc_endpoint' state set in '{0}'.".format(
+                    pconf['state_name']))
+        except Exception as err:
+            raise type(err)('state s3_vpc_endpoint: {}'.format(err))
+
+##############################################################################
+
+# TODO worksvic: VPC logical domain name creation
+# TODO worksvic: S3 bucket - push vic manifest to infrastructure bucket
+
+##############################################################################
+
+
+
+##############################################################################
+
+    except Exception as err:
+        raise type(err)('create_stage(): {}'.format(err))
+
+
+##############################################################################
+##############################################################################
+    try:
+## 3) Confirm vic config process
+##   - confirm/validate VIC is under human control
+##   - confirm/validate VIC is under automation control
+##   - user conformation/pester to destroy "build time trust"
+##     - remove bootstrap ssh user/keys
+##   - User conformation now unblocks further host provisioning.
+
+        ## TODO: worksvic
+        ## Generate info for TF VIC control.
+
+        # TODO: finale worksvic
+        #_unlock_vic_state()
+## --
+## Next Steps (nontrivial)
+## - a_launch_instance all
+##   - ensure via API that reserved machine counts exist
+##     - request Support via API if machine counts do not match expectations
+## (this cannot happen in VIC bootstrapping due to size/counts being defined in app stack)
+## Future work: predetermine size/counts across new fleet and request reservations way back at VPC creation time, once we understand what it takes to light 'all'.
+
+        _report_print("FINISHED CREATING VIC '{0}' IN REGION '{1}'".format(
+            manifest['vpc_supernet']['name'], manifest['region']))
+
+    except Exception as err:
+        raise type(err)('create_stage() conformation followup: {}'.format(err))
+
+
+def usage(msg=None, _exit=1, _fdout=None):
+    '''
+    Usage with exit handling properties.
+
+    Args:
+        msg: string, optional user message to print
+        _exit: int as exit code
+        _fdout: can be sys.stderr or sys.stdout (or other fd)
+
+    Returns:
+        help message text block
+        will exit program
+    '''
+    _desc = """
+{myname}
+
+  Utility for creating a new VIC
+  Version {version}.
+
+  This utility will:
+    - ask or confirm creation options up front
+      (this stage must complete, and generates manifest/assets for continuing)
+    - create a vic
+      (this stage has many stages, which may fail, and can be resumed using manifest/assets)
+    - handle any post-creation interaction needs at the end
+
+  This utility requires that a given AWS account has been initialized for use,
+  please see 'vic init' for further information on AWS account initialization.
+  This utility also operates on one configured AWS account at a time, see
+  'vic config-admin' to set up access to your account.
+
+usage:
+
+  {myname}
+  {myname} [-v] [-y] [-p <vicname>] [-r <region>] [-c <class>]
+  {myname} [-v] [-y] [-i </path/to/manifest/dir>]
+  {myname} [-h]
+
+arguments:
+
+  -y  Yes to all questions, accepting default values.
+
+  -v  Verbose, prints human-centric output to stderr.
+
+  -h  Print this help to stdout, and exit zero.
+
+  -i <path_to_preflight_manifest>
+      Re-initialze and continue wherever we left off, using the supplied
+      assets directory.
+
+  -l  List available vic names, a convenience feature.
+      (see 'vic list' for more vic/account introspection tooling)
+
+  -p <vicname>
+     A specific user-defined vicname.  This name cannot
+     be arbitrary, but must correspond to a free name available
+     in aws.
+
+  -c <class>
+     A vic class, hard-set default is 'dev', possible values
+     configurable in etc/vic.conf as 'vic_class_types'.
+
+  -r <region>
+     AWS region, e.g. us-east-2, us-west-1, etc...
+
+see also:
+   vic destroy -h
+"""
+    if _fdout is None:
+        if _exit == 0:
+            _fdout = sys.stdout
+        else:
+            _fdout = sys.stderr
+
+    print >> _fdout, _desc.format(myname=os.path.basename(sys.argv[0]),
+                                  version=__version__,)
+    _fdout.flush()
+    if msg is not None and msg is not '':
+        print >> _fdout, '\n' + str(msg)
+        _fdout.flush()
+    sys.exit(_exit)
+
+
+def main(argv):
+    '''
+    Handles command line input.
+
+    Args: argv
+
+    Returns: That depends.  -h for usage/help.
+    '''
+    try:
+        try:
+            opts, args = getopt.getopt(argv, 'r:c:i:avhy')
+            vprint("processing argv: {}".format(argv))
+            for flag, opt in opts:
+                if flag == '-v':
+                    global verbose
+                    os.environ['VERBOSE'] = 'True'
+                    vprint("processing argv: {}".format(argv))
+                elif flag == '-a':
+                    vic.afail()
+                elif flag == '-h' or flag == '--help':
+                    usage('', 0)
+                    sys.exit(0)
+                elif flag == '-y':
+                    pconf['yestoall'] = True
+                # TODO optarg handle setting target_vic_name
+                elif flag == '-c':
+                    pconf['class_default'] = opt
+                    pconf['vic_classes'] = vic.upsert_list(pconf['vic_classes'], opt)
+                elif flag == '-i':
+                    pconf['buildassets'] = opt
+                    pconf['continue_msg'] = "RE-INITIALIZING CREATION STAGE"
+                elif flag == '-r':
+                    pconf['target_region'] = opt
+                    # set this hard, so breadcrumb return for vic.set_region() is correct,
+                    os.environ['AWS_DEFAULT_REGION'] = pconf['target_region']
+            if len(args) == 0:
+                if not pconf['buildassets']:
+                    preflight_stage()
+                create_stage()
+                sys.exit(0)
+            elif len(args) >= 2:
+                raise ValueError("Argument list too long, see 'vic {0} -h': {1}".format(_cmd, argv))
+            else:
+                raise ValueError('TODO: decide if we want raw args here: {0}'.format(args[0]))
+        except (getopt.GetoptError, RuntimeError, TypeError, NameError) as err:
+            raise ValueError(err)
+
+    except Exception as err:
+        raise type(err)('{0} main(): {1}'.format(sys.argv[0], err))
+
+    # we really shouldn't get here
+    sys.exit(1)
+
+
+
+# TODO: Only initialize variables which do not have external data dependencies,
+# e.g. don't make api calls or load config files.
+try:
+    pconf = vic.configDict()
+    pconf['user'] = vic.aws_whoami()
+    pconf['batch_comment'] = 'a-create {0} {1}'.format(pconf['user'], vic.wallclock())
+    pconf['vic_create_session_id'] = str(uuid.uuid1())
+    pconf['consoleurl'] = "https://{0}.signin.aws.amazon.com/console".format(
+        vic.fetch_account_id()[0])
+    os.environ['VIC_CREATE_SESSION'] = str(pconf.vic_create_session_id)
+    vprint('Create Session ID: {}'.format(pconf.vic_create_session_id))
+    vprint('Fetching local VIC config...')
+    for key, val in vic.source(str(os.environ['MYHIER'] + '/etc/vic.conf')).iteritems():
+        pconf[key] = val
+        # note, we pick up pconf['aws_default_region'] here
+    pconf['info_domain'] = 'info.{}'.format(pconf['vic_tld'])
+
+    pconf['vic_classes'] = pconf['vic_class_types'].strip().split(' ')
+    # hardcoded 'dev' as most basic default class,
+    pconf.alt_set('class_default', 'dev')
+
+    _me = os.path.basename(sys.argv[0])
+    _cmd = _me.split('-', 1)[1:][0]
+    try:
+        if os.environ['TMPDIR']:
+            TMPDIR=os.environ['TMPDIR']
+    except:
+        TMPDIR='/tmp'
+except Exception as err:
+    raise type(err)('{0}: {1}'.format(sys.argv[0], err))
+
+
+if __name__ == '__main__':
+    main(sys.argv[1:])

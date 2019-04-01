@@ -1,0 +1,16 @@
+This tooling was created by:
+
+  Jacob Zimmerman - original concept, requirements, and name
+  Isaac (.ike) Levy - first implementation
+  Ian Westcott - heavy design and implementation collaboration
+  Zach Himsel - heavy design and implementation  collaboration
+  Kamran Raja - early design input
+  Ariel Douglas - late desgin input
+  Raúl Cuza - broke everything for the better
+
+Special thanks to,
+
+  Adam Moore - Laser-precise development stack pointers and splunking.
+  Daniel Han - Input on common Programming practices.
+  Jonathan Trope - Test frameworks advise.
+

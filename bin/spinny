@@ -1,0 +1,32 @@
+#!/bin/sh
+
+# usage:
+#         spinny [int]
+#
+# Utility you can use instead of sleep(1)
+# Imprecise, yet provides interactive "I am alive" terminal
+# feedback.  Defaults to 5 seconds if no args.
+# Accepts integers as seconds, but this program is far from
+# a precision timing tool- but useful for many cases.
+
+spinny_countdown() {
+# expects int for rotation count, (imprecisely in seconds)
+# defaults to roughly 2 seconds
+_count=1
+while [ ${_count} -le ${1} ] ; do
+  printf ' '
+  for i in u d ; do
+    printf '\b|' ; sleep .20
+    printf '\b/' ; sleep .20
+    printf '\b-' ; sleep .20
+    printf '\b\\' ; sleep .20
+  done
+  _count=$(( $_count + 1 ))
+  printf '\b.'
+done
+}
+
+spinny_countdown ${1:-5}
+echo ''
+
+true

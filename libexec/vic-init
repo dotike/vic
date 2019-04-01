@@ -1,0 +1,447 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*
+'''
+vic-init -- initalize a new AWS account.
+
+Set the stage for vic creation, testing first to ensure our account is sane.
+
+# TODO: apply roles to prevent any user except root from deleting the info zone.
+# TODO: this is the only utility which can be run using root credentials.
+# TODO: drop vic-admin role into account, (enabling all other tools).
+# TODO: validate/setup CloudTrail to log all account operations
+#    - only root account credentials can create (and thereby delete)
+
+# TODO Nice to haves:
+# EIP limits check, increase messaging.
+# VPC limits check, increase messaging.
+# - CreateReusableDelegationSet, can work in concert with DHCP object for VPCs.
+'''
+# @depends: boto3, python (>=2.7)
+__version__ = '0.1'
+__author__ = 'Isaac (.ike) Levy <ike@blackskyresearch.net>'
+
+import os
+import sys
+import boto3
+import vic
+import time
+from getpass import getpass
+
+description="Initalize or re-initalize an AWS account for vic use."
+
+vic_conf = vic.source(str(os.environ['MYHIER'] + '/etc/vic.conf'))
+info_zone = 'info'
+# must be unique to the runtime of this program, used for AWS retries
+unique = '{0}.{1}'.format(str(time.time()), os.environ['AWS_ACCESS_KEY_ID'])
+info_zone_warning ="WARNING: Do not remove, contains vic state data for this AWS account."
+_me = os.path.basename(sys.argv[0])
+
+def _write_info_zone(info_tld=None, unique=unique, retry_count=0):
+    info_zone_warning = "WARNING: Do not remove, contains vic state data for this AWS account."
+    try:
+        w_client = boto3.client('route53')
+        w_client.create_hosted_zone(
+            Name=info_tld,
+            CallerReference=unique,
+            HostedZoneConfig={
+                'Comment': info_zone_warning,
+                'PrivateZone': False,
+            },
+        )
+    except  Exception as err:
+        if retry_count > 0:
+            time.sleep(float(vic_conf['aws_retry_timeout']))
+            retry_count = retry_count - 1
+            _write_info_zone(info_tld=info_tld, retry_count=retry_count)
+        else:
+            raise EnvironmentError('boto3 call: {}'.format(err))
+    except Exception as err:
+        raise type(err)(
+            '_write_info_zone() error: {}'.format(err))
+
+    return True
+
+def startmsg(_fdout=sys.stderr):
+    '''
+    This program has a long preamble, based on the notion that setting
+    up an AWS account does not often happen.
+
+    Args:
+        None required, this just prints.
+        _fdout - sys.stdout or sys.sterr typically
+
+    Returns:
+        prints preamble text to screen
+    '''
+    msg = '''
+##############################################################################
+# WARNING: You are about to initialize your AWS account,
+# this requires admin credentials for your account, and this process does not
+# accept AWS security tokens.
+#
+# Credentials for existing AWS accounts:
+#
+#   - Ask your administrator for access to an existing AWS account,
+#     you will need an appropriate user account and API key to continue.
+#
+#   - Use `vic test-aws` to see if your API key is setup and working
+#     with your account.
+#
+#   - Use `vic config-admin` to setup your API key on your computer, allowing
+#     you to use any vic tooling.
+#
+# For a new AWS account:
+#
+#   - Pay for a new AWS account, ask your manager to whip out a credit
+#     card and start a new account at https://aws.amazon.com/
+#
+#   - Based on network topology, your AWS account vics may not be internally
+#     routable to existing vics.  Consult your system administrator for
+#     guidance.
+#
+##############################################################################
+# `vic init` sets up the following AWS account bits: 
+##############################################################################
+#
+# You will now be asked a brief series of questions, for each vic setup need.
+#
+# THIS PROGRAM CAN BE INTERRUPTED AND RE-RUN ANY TIME
+# (operations which follow are idemvicent and isolated)
+##############################################################################
+
+          '''
+    print >> _fdout, msg 
+
+def yes_no(user_choice=''):
+    '''
+    Process a yes/no answer from user input,
+    return True/False, die on bad input.
+    '''
+    try:
+        if user_choice.lower() in ['y', 'yes']:
+            return True
+        elif user_choice.lower() in ['n', 'no']:
+            print "Aborting, you can try again any time."
+            return False
+        else:
+            vic.die("Bad input, you can try again any time.")
+    except Exception as err:
+        raise type(err)(
+            'yes_no() error: {}'.format(err))
+
+def check_account():
+    '''
+    Checks for AWS account, and if not configured, asks user for account info.
+    '''
+    account_id = False
+
+    try:
+        account_id = vic.fetch_account_id()
+        print "You will be initalizing AWS account '{}', \n".format(account_id[0])
+        print '  https://{0}.signin.aws.amazon.com/console'.format(account_id[0])
+        if account_id[1]:
+            print '    - also reachable via,'
+            for account_alias in account_id[1]:
+                print '  https://{0}.signin.aws.amazon.com/console'.format(account_alias)
+        print ''
+    except Exception as err:
+        vic.die("Account credentials check failed.  Please check your account credentials and try again.")
+
+    return account_id
+
+def set_tld_zone(firstrun=True):
+    '''
+    Checks and set for TLD zone.
+    '''
+    info_zone = None
+    try:
+        info_tld = "info.{}".format(vic_conf['vic_tld'])
+        print "\nChecking AWS for Route53 domain '{}'".format(info_tld)
+        info_zone = vic.list_dns_zones(info_tld)
+        print "'{}' exists, moving on.".format(info_tld)
+    except ValueError as err:
+        print "There is no '{}' internal domain.".format(info_tld)
+        print "This zone controls vic build information for this account."
+        print ''
+        vic.redirect('stdout')
+        r53msg = "Do you wish to create Route53 zone '{}' for AWS account '{}' now? [y/n] ".format(
+            info_tld, vic.fetch_account_id()[0]) 
+        sys.stdout.write(r53msg)
+        if yes_no(raw_input()):
+            # create the info zone if it does not appear to exist,
+            _write_info_zone(info_tld=info_tld,
+                             retry_count=int(vic_conf['aws_retry_count']))
+            if firstrun:
+                set_tld_zone(firstrun=False)
+        else:
+            sys.exit(0)
+
+    except Exception as err:
+        raise type(err)('set_tld_zone(): {}'.format(err))
+
+    return info_zone
+
+def add_vic_names():
+    '''
+    Checks and sets available vic names.
+    '''
+    nameslist = []
+    namesfile = str(os.environ['MYHIER'] + '/etc/vic_256_names.txt')
+    _exit_message = ''
+    print ''
+    try:
+        with open(namesfile) as namefile:
+            for vicname in namefile:
+                vicname = vicname.strip()
+                if not vicname == '':
+                    vic.upsert_list(nameslist, vicname.strip())
+        namefile.close()
+
+        print "This step will set {0} predetermined vic names for future use, from the file".format(
+            len(nameslist))
+        print "  '{1}'".format(len(nameslist), namesfile)
+        print ""
+        print "If you have set them here before, that's OK, you will be given the chance to set the names again."
+        print ""
+        print 'These names are used as the domain name for each vic, and vic_name.'
+        print 'Adding names now will not create any actual zones, but, adding this list will reset the list of possible names when creating new vics in this account.  If you are adding new names, old ones will not be deleted- but matching new/old names will be overwritten with new date-stamps.'
+
+        zones_used = len(vic.list_dns_zones().keys())
+        lclient = boto3.client('route53')
+        lresponse = lclient.get_account_limit(Type='MAX_HOSTED_ZONES_BY_OWNER')
+
+        print ''
+        print "{} of a maximum {} hosted zone limit, are currently used by this account.".format(
+            zones_used, lresponse['Limit']['Value'])
+
+        existing_vicnames = vic.list_dns_names(name='*.vicname.info.vic', zone='info.vic', dns_type='TXT')['names']
+
+        print "There are {} existing vic names in this account, ('*.vicname.info.vic').".format(
+            len(existing_vicnames))
+
+        if len(nameslist) != len(existing_vicnames) and len(existing_vicnames) >= 1:
+            print ""
+            print "You have {0} existing vicnames in this account, and are about to upsert {1} vicnames.".format(
+                len(existing_vicnames), len(nameslist))
+            sys.stdout.write("Do you wish to proceed adding vic names, (no will bypass and continue to next step)? [y/n] ")
+            if not yes_no(raw_input()):
+                print ""
+                print "BYPASS: adding predetermined vic names."
+                return True
+
+        elif len(nameslist) == len(existing_vicnames):
+            print ""
+            print "You have {0} existing, and {1} new vicnames.  This program does not verify if the names match.".format(
+                len(existing_vicnames), len(nameslist))
+            sys.stdout.write("Do you want to assume they match, and  bypass this time-consuming step? [y/n] ")
+            if yes_no(raw_input()):
+                print ""
+                print "BYPASS: adding predetermined vic names: local/remote counts match."
+                return True
+
+        if len(nameslist) != 256:
+            print ''
+            print "Expected 256 new names, but got {0} names from '{1}'.".format(
+                len(nameslist), namesfile)
+            sys.stdout.write('Are you sure you want to proceed? [y/n] ')
+            if not yes_no(raw_input()):
+                sys.exit(0)
+
+        if zones_used + len(nameslist) >= lresponse['Limit']['Value']:
+            print ''
+            print "WARNING: the names list you are adding overprovisions zone names for future use."
+
+        print ''
+        sys.stdout.write('Are you sure you want to add {} vic names now? [y/n] '.format(len(nameslist)))
+        if yes_no(raw_input()):
+            print ''
+            _info_tld = "info.{}".format(vic_conf['vic_tld'])
+            _zone_id = vic.tld_to_zone_id(_info_tld)
+            batch_comment = '"a-init {}"'.format(
+                    time.strftime("%a, %d %b %Y %H:%M:%S %Z", time.gmtime()))
+
+            for vic_name in nameslist:
+                _add_name = "{0}.vicname.{1}".format(vic_name, _info_tld)
+                r53conn = boto3.client('route53')
+                zresponse = r53conn.change_resource_record_sets(
+                    HostedZoneId = _zone_id,
+                    ChangeBatch = {
+                        'Comment': batch_comment,
+                        'Changes': [
+                            {
+                                'Action': 'UPSERT',
+                                'ResourceRecordSet': {
+                                    'Name': _add_name,
+                                    'Type': 'TXT',
+                                    'TTL': 300,
+                                    'ResourceRecords': [
+                                         {'Value': batch_comment},
+                                     ],
+                                 },
+                            },
+                        ],
+                    }
+                )
+                print "  UPSERT {} http{}: '{}'".format(
+                      zresponse['ChangeInfo']['Status'],
+                      zresponse['ResponseMetadata']['HTTPStatusCode'],
+                      _add_name,
+                    )
+                time.sleep(float(vic_conf['aws_retry_timeout']))
+
+        else:
+            sys.exit(0)
+
+    except Exception as err:
+        raise ValueError(err)
+    print ''
+    print 'Finished setting predetermined vic names.'
+    return True
+
+def add_vic_supernets():
+    '''
+    Checks and sets predetermined vic netblocks.
+    '''
+    print "This step will set predetermined vic netblocks for future use, generated from the configuration in 'vic_netbase.conf'."
+    print ""
+    print "If you have set these netblocks here before, that's OK, you will be given the chance to set the names again."
+    print ""
+    print 'These networks blocks used as the for each vic, matched to a vic_name when creating a vic.'
+    print 'If you are adding new names, old ones will not be deleted- but matching new/old networks will be overwritten with new date-stamps.'
+
+    info_zone = 'info.vic' # todo use config parameterization
+    vic_nets_list = []
+    available_names = []
+    all_vicnets = []
+
+    print ""
+    print "NOTE: we should have already checked for info zone, and maximum account zones, when handling 'vicname' records"
+
+    try:
+        vic_nets_gen = vic.vics_supernets_config()
+
+        for vic_super in vic_nets_gen:
+            vic.upsert_list(vic_nets_list, vic_super.strip())
+
+        info_stack = vic.list_dns_names(zone=info_zone, dns_type='TXT')['names']
+        for txt_record in info_stack:
+            # Only grabs the first line of the TXT record, (AWS route53 returns as separate records),
+            if txt_record['Name'].endswith("vicnet.{}.".format(info_zone)):
+                vic.upsert_list(all_vicnets,
+                               {txt_record['Name']: txt_record['ResourceRecords'][0]['Value']}
+               )
+
+        if len(vic_nets_list) != len(all_vicnets) and len(all_vicnets) >= 1:
+            print "There are {0} existing vic networks pre-set for use in this account, ('*.vicnet.{1}.').".format(
+                len(all_vicnets), info_zone)
+            sys.stdout.write("Do you wish to proceed adding vic net configs, (no will bypass and continue to next step)? [y/n] ")
+            if not yes_no(raw_input()):
+                print ""
+                print "BYPASS: adding predetermined vic netblocks."
+                return True
+
+        elif len(vic_nets_list) == len(all_vicnets):
+            print ""
+            print "You have {0} existing, and {1} new vicnets.  This program does not verify if the names match.".format(
+                len(vic_nets_list), len(all_vicnets))
+            sys.stdout.write("Do you want to assume they match, and  bypass this time-consuming step? [y/n] ")
+            if yes_no(raw_input()):
+                print ""
+                print "BYPASS: adding predetermined vic netblocks: local/remote counts match."
+                return True
+
+        print ''
+        sys.stdout.write("Are you sure you want to add {} 'vicnet' vic subnets now? [y/n] ".format(len(vic_nets_list)))
+        if yes_no(raw_input()):
+            print ''
+            _zone_id = vic.tld_to_zone_id(info_zone)
+            batch_comment = '"a-init {}"'.format(
+                    time.strftime("%a, %d %b %Y %H:%M:%S %Z", time.gmtime()))
+            for vic_net in vic_nets_list:
+                _add_net = "{0}.vicnet.{1}".format(
+                    str(vic_net).strip().replace('/', '_'),
+                    info_zone,
+                )
+                r53conn = boto3.client('route53')
+                zresponse = r53conn.change_resource_record_sets(
+                    HostedZoneId = _zone_id,
+                    ChangeBatch = {
+                        'Comment': batch_comment,
+                        'Changes': [
+                            {
+                                'Action': 'UPSERT',
+                                'ResourceRecordSet': {
+                                    'Name': _add_net,
+                                    'Type': 'TXT',
+                                    'TTL': 300,
+                                    'ResourceRecords': [
+                                         {'Value': batch_comment},
+                                     ],
+                                 },
+                            },
+                        ],
+                    }
+                )
+                print "  UPSERT {} http{}: '{}'".format(
+                      zresponse['ChangeInfo']['Status'],
+                      zresponse['ResponseMetadata']['HTTPStatusCode'],
+                      _add_net,
+                    )
+                time.sleep(float(vic_conf['aws_retry_timeout']))
+
+        else:
+            sys.exit(0)
+
+    except Exception as err:
+        raise type(err)('add_vic_supernets(): {}'.format(err))
+
+    return vic_nets_list, all_vicnets
+
+def public_domain_name():
+    '''
+    '''
+    message = """
+
+
+"""
+    return message
+
+
+def main(argv):
+    '''
+    TODO:
+      Fail with some good error messages explaining where to go if AWS account is not yet set up,
+        - for existing vic-aware AWS, ask an admin for access. (hook config credentials)
+        - for admins over an AWS account, where to go and put the coin in the slot.
+
+      If no AWS credentials configured, ('vic config-admin'), then offer the choice to input
+      root credentials on-screen manually.
+
+      -y for "yes" answer to all options
+      -h for help options
+      -v if verbose options
+    '''
+    vic.redirect('stderr')
+    startmsg()
+    vic.redirect('stdout')
+    account_id = check_account()
+    # TODO IMPORTANT: notify user to create AWS ticket to request 256 VPC's per region (default is 5).
+    print '##############################################################################'
+    info_zone = set_tld_zone()
+    # Set up our templated names and netblocks in vic info zone,
+    print '##############################################################################'
+    print add_vic_names()
+    print '##############################################################################'
+    print add_vic_supernets()
+    print '##############################################################################'
+    #print vic.vics_supernets_config()
+    #print vic.ipv4_contiguous('10.0.0.0/8', subnet_cidr='/10')
+    print '##############################################################################'
+    print public_domain_name()
+    print 'worksvic'
+    sys.exit(44)
+
+    sys.exit(0)
+
+if __name__ == '__main__':
+    main(sys.argv[1:])

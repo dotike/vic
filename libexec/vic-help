@@ -1,0 +1,112 @@
+#!/bin/sh
+
+# I ♥  UTF8, 若田
+
+yell() { echo "$0: $*" >&2; }
+die() { yell "$*"; exit 111; }
+try() { "$@" || die "cannot $*"; }
+
+debug() { fd="${fd:-2}";[ -n "$DEBUG" ] && try echo "$*" >&${fd}; }
+
+description="Basic info about the VIC system."
+
+doc_block() {
+# accepts 1 user message as string
+fd="${fd:-2}" # stderr
+ec="${ec:-5}" # Input/output error
+command_list="`list_commands`"
+try cat - 2>&$fd << EOF
+
+vic - tool suite version ${VERSION}
+
+WHAT THIS IS:
+  VIC (VPC IP Configurator) is a system for provisioning,
+  managing and destroying complete instances of an organization's
+  base AWS infrastructure.
+
+
+HOW TO USE IT:
+  If you haven't already, try issuing 'vic' without additional
+  subcommands or flags for a list of commands.
+  (You are probably reading this by running 'vic help'.)
+  'vic' is a combinator style tool, much like the popular git(1)
+  source control tools.
+
+  Each command may have it's own help, for more info, try to run:
+
+    'vic [command] -h'
+
+
+AVAILABLE COMMANDS:
+
+${command_list}
+
+
+ENV:
+    DEBUG
+      Performs many extra checks and sends warnings and erros to stdout.
+    VERBOSE
+      Terse explanation of signifigant steps to stderr, suitable to
+      pipe to logger(8) syslog(1), or interactive wrapper programs.
+
+  The following ENV vars are intended to keep VIC enviornments and
+  existing org enviornments completely separated.
+
+    VIC_AWS_ACCESS_KEY_ID
+      Used to set AWS_ACCESS_KEY_ID for vic subcommands.
+    VIC_AWS_SECRET_ACCESS_KEY
+      Used to set AWS_SECRET_ACCESS_KEY for vic subcommands.
+    VIC_AWS_DEFAULT_REGION
+      Used to set AWS_DEFAULT_REGION for vic subcommands.
+
+
+EXTENDING 'vic':
+  All vic commands are  merely programs in libexec, named "vic-whatever".
+  In other words, your program name must simply be prepended with "vic-".
+
+  These programs can be written in any language, but shell and python are
+  the only supported languages suitable for use as core vic tooling.
+  Additionally, while any program can be run, it should play nice with
+  standard UNIX principles- stdin, stdout, stderr - and exit codes- are all
+  used and respected.
+
+  If you provide a description variable to your program, in the form of:
+  '^description="My string."' - then your description will appear in the
+  list above.  Your program is responsible for its own help options- '-h'
+  is recommended for consistency across vic tooling.
+  Finally, the lib/ directory includes commonly used routines for shell and
+  python, and it's well worth using those libraries.
+
+
+EOF
+[ -n "$1" ] && printf "\n${1}\n"
+exit "$ec"
+}
+
+list_commands() {
+for i in `find ${myhier}/libexec -type f -depth 1 -name '*-*' | grep -v '.swp$' | sort` ; do
+  _prog="`basename ${i}`"
+  echo "${_prog#*-}" | pr -t -o 2
+  _desc="`grep '^description=' ${i} | head -n 1 | sed 's/^description=//;s/[ \t]*$//' | sed 's/^[\"]*//;s/[\"]*$//'`"
+  echo "${_desc:-No 'description' given.}" | fold -sw 70 | pr -t -o 10
+  echo
+done
+}
+
+
+## vars
+
+description="Basic info about the VIC system."
+_me_cmd="`echo ${0##*/} | try cut -d '-' -f 2-5`"
+
+dothere=$(cd "${0%/*}" 2>/dev/null; echo "`pwd -L`")
+  debug "# dothere=$dothere"
+myhier="${dothere%/*}"
+  debug "# myhier=$myhier"
+
+
+## action
+
+doc_block
+
+exit 0

@@ -1,0 +1,245 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+'''
+JSON slurp roller, brute-force smashing of JSON format text.
+
+Currently provides:
+    Cheap flattening of any JSON data thrown at it, key/value pairs for
+    all output, keys namespaced by hierarchical depth in the JSON tree.
+
+Handy utility, but limited:
+Based on apparent limitations of the Python json module, (it slurps),
+this is good for small json handling operations where the entire
+json text can be slurped into this program, (not streamed).
+The output is limited as well, due to the nature of allowed JSON key
+name characters being a mismatch with the relatively restrictive
+allowed shell variable name characters.  This is almost a case study
+in paradigm mismatch.
+
+Non the less, still a very useful tool, precise for what it is.
+'''
+# @depends: None
+__version__ = '0.0'
+__author__ = 'Isaac (.ike) Levy <ike@blacksskyresearch.net>'
+
+
+import sys
+import json
+import re
+import collections
+import types
+
+
+def ioslurp(filearg=None):
+    '''
+    JSON in, dict out, following file semantics.
+
+    Emulate the input behavior of fileinput() module, but in barbaric
+    fashion, slurp the entire file instead of operating line by line.
+
+    This goes against all rational best practices in file handling,
+    (stream not slurp), to provide input for software which may need
+    it (for example, the Python built-in json module.)
+
+    Args:
+        filearg, optional string path name, allowing command line
+        optins to be handled separatey from this program.
+
+        When filearg is not supplied, ioslurp() tries to load files
+        in a similar manner to the Python fileinput module:
+           1) sys.argv[1]
+           2) if sys.argv[1] is '-', sys.__stdin__
+           2) sys.__stdin__
+
+    Returns:
+        Input as single file object.
+
+    '''
+    if filearg is not None:
+        filetry = filearg
+    elif sys.argv[-1] != sys.argv[0]:
+        filetry = sys.argv[-1]
+    else:
+        filetry = '-'
+
+    try:
+        payload = json.load(open(filetry, "r"))
+    except IOError as ioerr:
+        try:
+            if not sys.__stdin__.isatty():
+                payload = json.load(sys.__stdin__)
+        except Exception as inerr:
+            raise type(err)(
+                "ioslurp() file from __stdin__: {0}: {1}".format(inerr, ioerr))
+
+    except Exception as err:
+        raise type(err)(
+            "ioslurp() JSON parse error ioslurp(): {0}".format(err))
+
+    try:
+        return payload
+    except Exception as err:
+        raise type(err)(
+            "ioslurp() Expecting JSON file as arg or stdin: {}".format(err))
+
+def upsert_list(alist, avalue):
+    '''
+    A riff on builtin list append which behaves like an upsert.
+    Efficiently ensures list elements are unique for appends.
+
+    Args:
+        alist: A list.
+        avalue: An object to upsert into list.
+
+    Returns:
+        The new list.
+
+    '''
+    try:
+        alist.index(avalue)
+    except:
+        alist.append(avalue)
+    return alist
+
+def formatshvar(strName=None):
+    '''
+    Given a string, it massages it into a shell legal varible
+    if it is not.
+
+    Legal variable names and our remedies here:
+    Only ASCII letters (either case), '_', and digits.
+      + nonconformant characters will be substituted with '_'
+    The first character must not be a digit.
+      + when we encounter this, we will prepend this with '_'
+    The minimunm length is 2 characters, one char names not allowed.
+      + when we encounter one charater names, we will prepend this with '_'
+      + when we encounter no-name variables, (bare strings and lists),
+        we will prepend the value for the kwarg 'prepend',
+        and when it does not exist, we will prepend with the name
+        "__"
+    '''
+
+    if not strName:
+        return '__'
+    else:
+        try:
+            varstring = re.sub('\W+', '_', strName.strip())
+            #                    ^
+            #                    All non-alphanum characters
+            #   regex            includes '_' but it's more work
+            #   explain          to treat it special, just replace
+            #                    it with itself.
+            if varstring[0].isdigit():
+                #or not string[0].isalpha():
+                varstring = '_{}'.format(varstring)
+            elif len(varstring) == 1:
+                varstring = '_{}'.format(varstring)
+            elif len(varstring) < 1:
+                return '__'
+            return varstring
+        except Exception as err:
+            raise type(err)("string massage error: {}".format(err))
+
+def escapehatch(pullstring='""'):
+    print pullstring
+    try:
+        if pullstring[0] is '"':
+            return pullstring.replace('"', '\\"')
+        else:
+            return pullstring.replace("'", "\\'")
+    except IndexError:
+        return pullstring
+
+def squash(inobj, path='', sep='', firstrun=True):
+    '''
+     Print JSON data in a linear format suitable for searching (e.g. with grep).
+     Attributes are representd as:
+
+          objectKey='objectValue'
+          objectKey_nestedObjectKey='objectValue'
+          objectKey_listData="'foo' 'bar' 'baz'"
+
+    Object redundancy for nested objects will return the compound value as well
+    as the expanded value, which is often useful for understanding the data
+    while working with it.
+
+    Note that all object key names may be mutated to match shell compatable
+    naming convention.
+    All values are handled as strings wrapped in single quotes to prevent
+    expansion on use.  Int, float, complex, number values are expressed
+    as represented as strings to present a uniform data interface. 
+    List values are represented as space delimited strings, and wrapped
+    in double-quote markers, not to conflict with the values listed.
+
+    Key-less data payloads are given the legal name "__", and addtional
+    un-keyed data payloads are given incrementing numbers as they are
+    encountered, e.g. "__0", "__1", and so on.
+
+    All JSON types handled,
+    string - quoted with ''
+    number - handled like string
+    array - handled as ifs list, as well as each item keyed individually
+    object - processed as key/value variable format
+
+    false - handled as literal string 'false'
+    true - handled as literal string 'true'
+    null - handled as empty string ''
+
+    Args:
+      inobj, any built-in python data type
+      path, string used to build parent namespacing by prepending
+      sep, namespace and replacment separator, defaults to shell legal '_'
+
+    Returns:
+      Prints namespaced shell style variables to stdout.
+    '''
+    if not path:
+        path=''
+
+    try:
+        # isinstance() usage requires careful order of handling,
+        if isinstance(inobj, basestring):
+            if firstrun:
+                print "'{}'".format(escapehatch(inobj))
+            else:
+                print "{0}='{1}'".format(formatshvar(path), escapehatch(inobj))
+
+        elif isinstance(inobj,dict):
+            for k,v in inobj.iteritems():
+                squash(v,path=path+sep+str(k),sep='_',firstrun=False)
+        else:
+            if isinstance(inobj, list):
+                lpos = 0
+                relist = []
+                for litem in inobj:
+                    lpos = lpos + 1
+                    lpath = "{0}list{1}".format(path, str(lpos))
+                    squash(litem,lpath,sep='_',firstrun=False)
+                    relist.append("'{}'".format(str(litem)))
+                print '{0}list0="{1}"'.format(formatshvar(path), " ".join(relist))
+
+            elif inobj is None:
+                print "{}='{}'".format(formatshvar(path), '')
+            elif isinstance(inobj, bool) and inobj is True:
+                print "{}='{}'".format(formatshvar(path), 'true')
+            elif isinstance(inobj, bool) and inobj is False:
+                print "{}='{}'".format(formatshvar(path), 'false')
+
+            elif isinstance(inobj, int) or\
+                 isinstance(inobj, float) or\
+                 isinstance(inobj, long) or\
+                 isinstance(inobj, complex):
+                print "{}='{}'".format(formatshvar(path), inobj)
+
+            else:
+                print "{}='{}'".format(formatshvar(path), escapehatch(str(inobj)))
+    except Exception as err:
+        raise type(err)(
+            "Error squashing data object: {}".format(err))
+
+def main(argv):
+    squash(ioslurp())
+
+if __name__ == '__main__':
+    main(sys.argv[1:])
+

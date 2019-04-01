@@ -1,0 +1,258 @@
+#!/usr/bin/env python
+'''
+vic-test-aws - tests for regular vic operators, as well as library test features
+'''
+# @depends: boto3, python (>=2.7)
+__version__ = '0.2'
+__author__ = 'Isaac (.ike) Levy <ike@blackskyresearch.net>'
+
+import os
+import sys
+import getopt
+import boto3
+import vic
+from vic import die, yell
+import time
+import subprocess
+import traceback
+
+def vic_doctest_runner(verbose=False):
+    '''
+    Runs doctest tests from vic lib.
+    Exec is necessary here, so the lib can keep its context scoped.
+    '''
+    _viclib="{0}/lib/python/vic.py".format(myhier)
+
+    if verbose:
+        _cmd = "python -m doctest -v {}".format(_viclib)
+    else:
+        _cmd = "python -m doctest {}".format(_viclib)
+
+    return subprocess.call(_cmd, shell=True)
+
+def fetch_lib_test_paths(funk=None):
+    '''
+    Fetches relative test paths, sorted alphabetically.
+
+    Args:
+        None - returns a full list of paths ending with '.py'.
+        funk - string, function name in vic lib
+
+    Returns: list of paths to tests to run.
+    '''
+    _lib_tests = []
+    testdir = "{}/tests".format(myhier)
+
+    for root, dirnames, filenames in os.walk(testdir):
+        for filename in filenames:
+            if funk:
+                if filename.startswith(funk):
+                    _lib_tests.append(os.path.join(root, filename))
+            else:
+                if filename.endswith('.py'):
+                    _lib_tests.append(os.path.join(root, filename))
+    _lib_tests.sort()
+    return _lib_tests
+
+def aws_simple_users_check():
+    '''
+    Prints simple output from iam user check.
+    Useful to show weather or not a user has their AWS auth setup correctly.
+    '''
+    # Create IAM client
+    iam = boto3.client('iam')
+
+    # List users with the pagination interface
+    paginator = iam.get_paginator('list_users')
+    for response in paginator.paginate():
+        vic.prettyPrint(response)
+
+def print_describe(_fdout=None):
+    try:
+        if _fdout is None:
+            if _exit == 0:
+                _fdout = sys.stdout
+            else:
+                _fdout = sys.stderr
+    except:
+        _fdout = sys.stdout
+    print >> _fdout, _desc.format(_me_cmd=_me_cmd, description=description,)
+
+def usage(msg=None, _exit=1, _fdout=None):
+    '''
+    Usage with exit handling properties.
+
+    Args:
+        msg: string, optional user message to print
+        _exit: int as exit code
+        _fdout: can be sys.stderr or sys.stdout (or other fd)
+
+    Returns:
+        help message text block
+        will exit program
+    '''
+    _desc = """
+{myname}
+
+  {description}
+
+usage:
+
+  {myname}
+  {myname} [-v] [-p|w]
+
+arguments:
+
+  None
+      Print json IAM users to stdout and exit.
+      Useful for operators to test AWS auth configuration, does
+      not rely on external test programs.
+
+  -v  Verbose mode.
+
+  -p  Run all doctest tests for vic python library.
+
+  -w  "worksvic" mode, a quick svic in this code to run library functions.
+      Also prints the word '# worksvic' to stderr.
+
+  -h  Print this help to stdout, and exit zero.
+
+see also:
+  vic config-admin
+  vic help
+"""
+    if _fdout is None:
+        if _exit == 0:
+            _fdout = sys.stdout
+        else:
+            _fdout = sys.stderr
+
+    print >> _fdout, _desc.format(myname=_me_cmd,
+                                  version=__version__,
+                                  description=description)
+    _fdout.flush()
+    if msg is not None and msg is not '':
+        print >> _fdout, '\n' + str(msg)
+        _fdout.flush()
+    sys.exit(_exit)
+
+def main(argv):
+    '''
+    Process program args and handle all program interfaces.
+
+    Args:
+        argv: All command line options and arguments.
+
+    Returns:
+        In many cases the program is designed to exit from other program
+        logic before reaching the end of this function.
+        If we reach the end of this function, intentionally exit using
+        the exit code, which may have been set by called program logic.
+
+    Bugs:
+        Python option handling silently drops ordering of option batching.
+    '''
+    try:
+        for arg_pre in sys.argv:
+            if str(arg_pre) == '-pv':
+                verbose = True
+            elif str(arg_pre) == '-v':
+                verbose = True
+    except Exception as err:
+        die('invalid arg: {0}'.format(err))
+
+    try:
+        opts, args = getopt.getopt(argv, 'vhpdw')
+    except getopt.GetoptError as err:
+        die("Error: '{}', try -h for usage.".format(err), 2)
+    try:
+        for flag, opt in opts:
+            if flag == '-v':
+                verbose = True
+            elif flag == '-h':
+                usage('', 0)
+            elif flag == '-p':
+                 try:
+                   sys.exit(vic_doctest_runner(verbose))
+                 except Exception as err:
+                   die(err)
+                 sys.exit(_exit)
+            elif flag == '-d':
+                 try:
+                   print_describe(sys.stdout)
+                 except Exception as err:
+                   die(err)
+                 sys.exit(_exit)
+            elif flag == '-w':
+                print >> sys.stderr, '# worksvic'
+                try:
+
+                    # Example,
+                    #vic.pVpcIdrettyPrint(vic.list_igw())
+
+                    #vic.prettyPrint(vic.list_iam_roles())
+                    #print " ##############################################################################"
+                    #vic.prettyPrint(vic.list_iam_roles(vic_id='light_catimor.vic'))
+                    #print " ##############################################################################"
+                    vic.prettyPrint(vic.list_iam_roles(vic_id='light_catimor.vic', show_policy=True))
+                    #print " ##############################################################################"
+                    #vic.prettyPrint(vic.list_sqs_queues(vic_id='light_peaberry.vic'))
+                    #print " ##############################################################################"
+                    #vic.prettyPrint(vic.list_sqs_queues(sqs_id='light_peaberry-vic-dns_updates_failed', region='us-west-1'))
+                    #print " ##############################################################################"
+                    #vic.prettyPrint(vic.list_sqs_queues(sqs_id='light_peaberry-vic-dns_updates', region='us-west-1'))
+                    #print " ##############################################################################"
+                    #vic.prettyPrint(vic.list_sqs_queues(sqs_id='dns_updates_failed-lig'))
+                    #print " ##############################################################################"
+                    #vic.prettyPrint(vic.list_sqs_queues(region='us-west-1'))
+
+                    #vic.prettyPrint(vic.list_lambdas(region='us-west-1'))
+                    #vic.prettyPrint(vic.list_lambdas())
+                    #vic.prettyPrint(vic.list_lambdas(vic_id='no_vic.test', region='us-west-1'))
+
+                except Exception as err:
+                    traceback.print_exc()
+                    raise type(err)(
+                        'worksvic failure: {}'.format(err))
+                sys.exit(0)
+    except (RuntimeError, TypeError, NameError) as err:
+        die('invalid arg: {0}'.format(err))
+    if len(args) == 0:
+        try:
+            print vic.aws_lastlogin()
+            try:
+                if verbose:
+                    account_id_data = vic.fetch_account_id()
+                    print"console: https://{0}.signin.aws.amazon.com/console".format(account_id_data[0])
+                    for alias in account_id_data[1]:
+                        print "alias:   https://{0}.signin.aws.amazon.com/console".format(alias)
+            except:
+                pass
+        except Exception as err:
+            quickmsg = "-h for help, Did you configure AWS access using 'vic config-admin'?"
+            die('{0} : {1}'.format(quickmsg, err))
+        sys.exit(0)
+
+    # if we've reached this point, explicitly exit not OK
+    die("Bad procedure for program.", 76)
+
+
+description="""Various AWS tests, for operators and implementors."""
+dothere = os.path.dirname(os.path.normpath(sys.argv[0]))
+myhier = os.path.dirname(dothere)
+vic_conf= vic.source(str(myhier + '/etc/vic.conf'))
+_me = os.path.basename(sys.argv[0])
+_me_cmd = _me.split('-', 1)[1]
+_desc="""
+  {_me_cmd} - {description}
+"""
+global verbose
+verbose = False
+try:
+    if _exit is None:
+        _exit = 0
+except:
+    _exit = 0
+
+if __name__ == '__main__':
+    main(sys.argv[1:])

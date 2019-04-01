@@ -1,0 +1,49 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "sqs:GetQueueUrl",
+        "sqs:GetQueueAttributes",
+        "sqs:ReceiveMessage",
+        "sqs:DeleteMessage",
+        "sqs:DeleteMessageBatch"
+      ],
+      "Resource": [
+        "${aws_sqs_queue.dns_updates.arn}"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "route53:ListResourceRecordSets",
+        "route53:ChangeResourceRecordSets"
+      ],
+      "Resource": [
+        "arn:aws:route53:::hostedzone/<HOSTEDZONEID>"
+    ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "route53:GetHostedZone*",
+        "route53:ListHostedZones*",
+        "route53:TestDNSAnswer"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect":"Allow",
+      "Action":[
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource":[
+        "arn:aws:logs:::log-group:${aws_cloudwatch_log_group.lambda-process_dns_updates.name}"
+      ]
+    }
+  ]
+}
+

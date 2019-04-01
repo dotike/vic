@@ -1,0 +1,12 @@
+##############################################################################
+For development simplicity, this libexec directory should contain a symbolic
+link to our vic.py library, e.g.
+
+  ./vic.py -> ../lib/python/vic.py 
+
+This symbolic link should not be included in the final installation, as the
+vic library will simply be installed in our pythonpath, (or, the pythonpath
+on local installation will be appended with our library dir.)
+
+This symlink allows us to simply 'import vic' in our applications, with no
+gotchas or edge cases to worry about.

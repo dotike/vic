@@ -1,0 +1,164 @@
+#!/bin/sh
+
+# Given a string arguement, this program will generate a unique id
+# suitable for generating unique id's in a distributed enviornment
+# which does not share state.
+#
+# Output is a sha1 hash, in string format.
+
+# usage:
+#
+#   thisprogram "some string as argv1"
+#
+# features:
+#
+#   ENV 'DEBUG' exists or not empty, will print the various
+#   sources of uniqueness to stderr.
+#
+
+# A little 3 finger claw keeps the action clean,
+yell() { echo "$0: $*" >&2; }
+die() { yell "$*"; exit 111; }
+try() { "$@" || die "cannot $*"; }
+# using this debug handler slows the program considerably,
+debug() { fd="${fd:-2}";[ -n "$DEBUG" ] && try echo "## $*" >&${fd}; }
+
+
+usage() {
+# accepts 1 user message as string
+fd="${fd:-2}" # stderr
+ec="${ec:-5}" # Input/output error
+try cat - 2>&$fd << EOM
+
+${0##*/} -- generate unique id suitable for distributed enviornments
+
+  usage:
+       ${0##*/} optional_input_data
+
+       ${0##*/}
+       ${0##*/} [-h]
+       ${0##*/} [-s string] [-u string] [-r string]
+
+  The ${0##*/}  utility can be used to igenerate very good unique id's in
+  for use in distributed enviornments.  When used, this program returns a
+  salty sha1 of the following data:
+
+   - program input string, if exists
+   - file path option, if exists, uses the file data
+
+  If no args or opts are supplied, this program will attempt to use
+  "/etc/ssh/ssh_host_*.pub" keys as unique sources.  If these files
+  do not exist or other problems arise using them, this program silently
+  passes this step.
+
+  Output is always salted with the following data, (which may be the
+  only items generating our uniqueness if no input or args, and no
+  'ssh_host*.pub' keys are available on the host):
+
+   - epoch time
+   - 4 bits from /dev/urandom
+
+Output
+
+  The output from ${0##*/} is a sha1 checksum string, which is very
+  stronly unique across distributed enviornments which do not share
+  state.
+
+Arguments and config parameters for for ${0##*/}:
+
+    -s string
+        This input provides entropy context for the unique id creation.
+        When it is not provided, only the other enviornment specific inputs
+        are used to generate our unique ID, (which is OK but not optimal).
+
+    -u "string"
+       This overrides the string which would be otherwise be pulled from
+       /etc/ssh/ssh_host_rsa_key.pub - and bypasses trying to read from that
+       file.  The intent of this value is to provide some strong host-specific
+       data which ehances global uniqueness.
+
+    -r "string"
+        This overrides the four random bytes this program pulls from
+        /dev/urandom by default, and bypasses tyring to read that data.
+
+    -z
+        Unset DEBUG if passsed via ENV.
+
+  ENV:
+      DEBUG      performs extra checks and sends warnings and errors to stdout
+      SEED       same as '-s' option above.
+      HOSTUNIQUE same as '-u' option above.
+      EXTRABYTES same as '-r' option above.
+
+  DEPENDENCIES:
+     This utility requires the openssl(1) utility, from any of the common
+     "standard" interfaces to openssl, (LibreSSL, OpenSSL proper, etc...).
+
+  BUGS:
+      This help text should really be a man page.
+      To simplify implementation, 'optional_input_data' uses all options
+      and args, instead of taking time to separate them- because our aim
+      is entropy, not correctness of values.
+
+EOM
+[ -n "$1" ] && printf "\n${1}\n"
+exit "$ec"
+}
+
+argproc() {
+debug "argproc, big args processing, mostly vars"
+debug "$*"
+while getopts 's:u:r:h' opt; do
+case "$opt" in
+s) SEED="${SEED:-$OPTARG}"
+   debug "SEED=${SEED}"
+;;
+u) HOSTUNIQUE="${HOSTUNIQUE:-$OPTARG}"
+   debug "HOSTUNIQUE=${HOSTUNIQUE}"
+;;
+r) EXTRABYTES="${EXTRABYTES:-$OPTARG}"
+   debug "EXTRABYTES=${EXTRABYTES}"
+;;
+z) unset DEBUG
+;;
+h) ec=1 fd=1 usage
+;;
+esac
+done
+shift $((OPTIND - 1))
+}
+
+
+## vars
+
+argproc "$*"
+
+seed_string="${SEED:-$*}"
+  debug "seed_string='${seed_string}'"
+
+datestamp="`try date '+%s'`"
+  debug "datestamp='${datestamp}'"
+
+if [ ! -n "${HOSTUNIQUE}" ] ; then
+  hostunique="`cat /etc/ssh/ssh_host_rsa_key.pub 2>&1`"
+else
+  hostunique="${HOSTUNIQUE}"
+fi
+    debug "hostunique='${hostunique}'"
+
+if [ ! -n "${EXTRABYTES}" ] ; then
+    four_random_bytes="`try dd if=/dev/urandom bs=4 count=1 2> /dev/null`"
+else
+    four_random_bytes="${EXTRABYTES}"
+fi
+    debug "four_random_bytes='${four_random_bytes}'"
+
+
+## action
+
+output_sha="`echo ${seed_string} ${datestamp} ${hostunique} ${four_random_bytes} | try openssl sha1`"
+
+echo ${output_sha##* }
+
+true
+

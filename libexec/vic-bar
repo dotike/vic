@@ -1,0 +1,13 @@
+#!/bin/sh
+
+# intended to show/test failure state for combinator tooling.
+
+shout() { echo "$0: $*" >&2; }
+die() { shout "$*"; exit 111; }
+try() { "$@" || die "cannot $*"; }
+
+# using it
+try cd /does/not/exist
+echo "Bizarre: /does/not/exist actually exists."
+
+true

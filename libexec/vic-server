@@ -1,0 +1,430 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*
+'''
+Launch or destroy a server in a VIC.
+
+Use the help flag, 'vic create -h' for more info.
+'''
+# @depends: boto3, python (>=2.7)
+__version__ = '0.1'
+__author__ = 'Isaac (.ike) Levy <ike@blackskyresearch.net>'
+
+import os
+import sys
+import getopt
+import boto3
+import vic
+
+description="Launch or destroy a server in a VIC."
+
+def dprint(prettymuchanything='', fd=sys.stderr):
+    '''
+    If debug mode is set, Prints just about anything to screen.
+
+    Args:
+      prettymuchanything - Usually strings, but just about any python object.
+      Operates on parent context var 'debug', or ENV 'DEBUG'.
+
+      fd - file descriptor out, usually 'sys.stderr' or 'sys.stdout'
+         Does not force this file descriptor if program is already redirecting.
+
+    Returns:
+      Returns nothing.
+      Print output if ENV var 'DEBUG' exists and is not none.
+    '''
+    try:
+        if os.environ['DEBUG']:
+            print >> fd, "# {}".format(str(prettymuchanything))
+        elif verbose:
+            print >> fd, "# {}".format(str(prettymuchanything))
+    except:
+        pass
+
+def usage(msg=None, _exit=1, _fdout=None):
+    '''
+    Usage with exit handling properties.
+
+    Args:
+        msg: string, optional user message to print
+        _exit: int as exit code
+        _fdout: can be sys.stderr or sys.stdout (or other fd)
+
+    Returns:
+        help message text block
+        will exit program
+    '''
+    _desc = """
+{myname}
+
+  Creating, Delete, or Query status for a given server in a VIC subnet.
+
+  Version {version}.
+
+  This utility requires that a VIC has been created, and that the user
+  who runs this program has permission to perform the requested actions.
+
+  Interactive-mode choices are invoked when various options are not supplied
+  as command line arguments.  For scripted use, the '-q' quiet flag will
+  suppress interactive modes, to guarantee clean scripted use, (raising error
+  for missing requisite arguements).
+
+usage:
+
+  {myname}
+  {myname} create
+  {myname} [-s|l <net_name>] [-q] [-j|J] [-n <int>] [-k <key>] [-r <role_string>]
+  {myname} create [-m </path/to/server_manifest.json>]
+
+  {myname} destroy [-j|J] [-i] <instance-id>
+
+  {myname} list [-j|J] [-i|s|l|p <name>]
+
+  {myname} [-h|D]
+
+  When called without arguements, interactive mode questions will be
+  presented to the user.
+
+modes:
+
+  The first argument is not a flag, and sets one of these program modes.
+  If no mode is supplied, 'create' is the default mode of operation.
+
+  'create' - Create a server, provides interactive questions for missing flags.
+             The flag options are described below.
+
+  'destroy' - To destroy an instance, requires an instance id.  No interactive
+              questions, you must know what instance you want to delete.
+
+  'list' - Lists instances, constrained to the most granular unit of flags
+           supplied: instance-id, phys_subnet_name, logical_net_name, vic_name.
+           These flag options are listed below, but specific to list operations:
+
+           + -i <instance-id>, the AWS instance id for the host to list.
+             Because we have to search all regions, this can take a long time.
+             Other flags will significantly reduce this time it takes to return
+             information for a host.  Useful pairings include: -r region,
+             -p vicname, or -l -s for physical or logical network constraints.
+
+           + -s <phys_subnet_name>, return all hosts in a single subnet.
+
+           + -l <logical_net_name>, return all hosts in a logical network zone.
+
+           + -p <vic_name>, return results for all instances in a given VIC.
+
+      List output is basic space-delimited information, yet, JSON output
+      using -j or -J flags can be used to fetch full instance detail.
+
+options:
+
+  -i <instance-id>
+      Modes: 'destroy' and 'list'.
+      If mixed with incompatable options, we will raise the appropriate error.
+      Modes: 'destroy', 'list'
+
+  -p <vicname>
+      User-defined vicname.  This name cannot be arbitrary, but must correspond
+      to a live vic name.  Can be supplied as 'vic_name' or 'vic_name.tld'.
+      Modes: 'destroy', 'list', and 'create'.
+
+  -l <logical_net_name>
+      The name of a logical network.
+      Modes: 'destroy', 'list', 'create'
+
+  -s <phys_subnet_name>
+      The name of a logical subnet.
+      Modes: 'destroy', 'list', 'create'
+
+  -n <int>
+      The number of servers to launch, must be paired with '-l',
+      which will launch (n) hosts in an even distribution across
+      availability zone subnets for a given logical network.
+      Can alternatively be paired with '-s', which will constrain
+      the count for hosts launched to the named subnet, (in one AZ).
+      Mode: 'create'
+
+  -k <ssh_key_name>
+      Named ssh key which exists in AWS region, used during launch.
+      Mode: 'create'
+
+  -g <security_group>
+      Use named security group, named by AWS security group ID.
+
+  -a <ami-id>
+      An AMI ID to use for the instance to be launched.
+      AMI must match the instance type, if provided with -x.
+      AMI must be available in the region where the server will light.
+
+  -t <instance_type>
+      An AWS instance type available in our region
+      Type must match the ami-id provided, if provided with -a.
+      Type must be available in the region where the server will light.
+
+  -G <storage_size_int_GB>
+      The specified size of the root volume, particular to our instance type.
+      An int, representing Gigabytes.
+      Additional volumes creation is not currently handled by this utility.
+
+  -r <role_name>
+      A string which corresponds directly to an automation tooling role.
+      VIC tooling does not validate the role, but the role will be written
+      in /etc/orgbits/bootstrap.conf for use by configuration management.
+      For convenience, the instance will be tagged with 'role', using this string.
+      From the bootstrap, the hostname server will be set as 'role.<vic_name.tld',
+      as will the AWS tag field 'Name'.
+
+  -j  Dumps json output to stdout and exit.  For create mode,
+      the json output serves as a manifest for use with '-m' flag.
+      Does not actually launch any instances when used in create mode.
+      Modes: 'list', 'create'
+
+  -J  Same as '-j' json, but will pretty-print json output.
+      Modes: 'list', 'create'
+
+  -m  Manifest mode, uses JSON manifest to provide values for
+      launching the server(s).
+      Mode: 'create'
+
+  -q  Quiet mode, disables interactive prompts for missing arguments.
+      Overrides and disables '-D' DEBUG, if that is set.
+      Useful to ensure scripted use of this program does not get hung
+      on interactive prompts.
+
+  -F  Force Mode, disables "are you sure" interactive prompts during destroy.
+
+  -D  Debugging messages printed to stderr.
+      (Also enabled when ENV var 'DEBUG' exists and is not none.)
+
+  -h  Print this help to stdout, and exit zero.
+
+env respected:
+   DEBUG - same as '-D' flag.
+
+see also:
+   'vic -h', 'vic list -h'
+"""
+    if _fdout is None:
+        if _exit == 0:
+            _fdout = sys.stdout
+        else:
+            _fdout = sys.stderr
+    print >> _fdout, _desc.format(myname=me, version=__version__)
+    _fdout.flush()
+    if msg is not None and msg is not '':
+        print >> _fdout, '\n' + str(msg)
+        _fdout.flush()
+    sys.exit(_exit)
+
+def _loadconfig():
+    '''
+    Processes necessary inputs after command line args
+    are processed, invoking interactive mode when necessary.
+
+    Args: None.
+
+    Returns: Nothing, adds values to pconf ConfigDict.
+    '''
+    try:
+        # if we run in quiet mode, and miss required args,
+        # we will use inversion of control to trust the use
+        # of missing/empty variables to raise a correct error.
+        ##if not pconf['quiet'] and pconf['mode'] == 'create':
+        if not pconf['quiet']:
+
+            if not pconf['region'] and not pconf['vic_name'] \
+            and not pconf['log_net_name'] and not pconf['phys_subnet_name']:
+                print 'DECIDE worksvic, we have nothing so start with regions.'
+                #'worksvic vic.name_to_region(name) handling'
+            # TODO worksvic
+
+            print ''
+            if not pconf['vic_name']:
+                print 'DECIDE worksvic, no vic_name'
+                #if not pconf['region']:
+                #    vic.name_to_region(pconf['vic_name'])
+            else:
+                print "Using VIC named: {}".format(pconf['vic_name'])
+
+            print ''
+            if pconf['log_net_name'] and pconf['phys_subnet_name']:
+                raise ValueError("You cannot specify both '-l' logical and '-s' physcial subnets.")
+            elif pconf['log_net_name']:
+                print "Using logical network named: {}".format(pconf['log_net_name'])
+                #if not pconf['region']:
+                #    vic.name_to_region(pconf['vic_name'])
+            elif pconf['phys_subnet_name']:
+                print "Using physical subnet named: {}".format(pconf['phys_subnet_name'])
+                #if not pconf['region']:
+                #    vic.name_to_region(pconf['vic_name'])
+            elif not pconf['log_net_name'] or not pconf['phys_subnet_name']:
+                print "DECIDE worksvic, physical or logical net"
+                #if not pconf['region']:
+                #    vic.name_to_region(pconf['vic_name'])
+
+            print ''
+            if not pconf['launch_count']:
+                print 'DECIDE worksvic, launch count, default to {}'.format(
+                    pconf.alt_set('launch_count', 1))
+            else:
+                print "We will launch a total of {} servers.".format(pconf['launch_count'])
+
+            print ''
+            if pconf['phys_subnet_name']:
+                print "We will launch {0} servers in physical subnet named: {1}".format(
+                    pconf['launch_count'], pconf['vic_name'])
+            elif pconf['log_net_name']:
+                print "We will launch {0} servers in logical net '{1}', round robin in physical subnets.".format(
+                    pconf['launch_count'], pconf['vic_name'])
+            else:
+                print "DELETE this 'else', just a worksvic helper."
+
+            print ''
+            if not pconf['ssh_key_name']:
+                print 'DECIDE worksvic, ssh key, default to bootstrap.{}'.format(
+                    pconf.alt('vic_name', 'vic_name.tld'))
+            else:
+                print "We will use ssh key named: {}".format(pconf['ssh_key_name'])
+
+        dprint("Done with big questions, batch up API calls for the end,")
+        for key, val in vic.source(str(os.environ['MYHIER'] + '/etc/vic.conf')).iteritems():
+            dprint("{0}='{1}'".format(key, pconf.alt_set(key, val) ))
+        pconf['consoleurl'] = "https://{0}.signin.aws.amazon.com/console".format(
+            vic.fetch_account_id()[0])
+        dprint("consoleurl='{}'".format(pconf['consoleurl']))
+        pconf['user'] = vic.aws_whoami()
+        dprint("user='{}'".format(pconf['user']))
+        pconf['batch_comment'] = '{0} {1} {2}'.format(me, pconf['user'], vic.wallclock())
+        dprint("batch_comment='{}'".format(pconf['batch_comment']))
+        dprint("{0}='{1}'".format('info_domain', pconf.alt_set(
+            'info_domain', 'info.{}'.format(pconf['vic_tld']) )))
+
+        # fetch target_subnet_list, one big API call to pick through:
+        if pconf['phys_subnet_name']:
+           pconf['_net_target'] = pconf['phys_subnet_name']
+        elif pconf['log_net_name']:
+           pconf['_net_target'] = pconf['log_net_name']
+        pconf['target_subnet_list'] = vic.list_physical_subnets(
+            vicname_or_logicalname=pconf['_net_target'],
+            show_metadata=True
+        )
+        #vic.prettyPrint(pconf['target_subnet_list'])
+        for sub_name, sub_meta in pconf['target_subnet_list'].iteritems():
+            # these will be the same, error later if not,
+            pconf['tld'] = sub_name.split('.')[-1]
+            if not pconf['vic_name']:
+                pconf['vic_name'] = "{0}.{1}".format(
+                    sub_meta['aws_metadata']['TagSane']['vic_name'], pconf['tld'])
+            pconf['vic_id'] = sub_meta['aws_metadata']['VpcId']
+            pconf['region'] = sub_meta['aws_metadata']['region']
+
+        # TODO vic_id from name
+        # TODO subnet_id, if physical or logical
+        print pconf
+    except Exception as err:
+        raise type(err)('_loadconfig(): {}'.format(err))
+
+
+def main(argv):
+    '''
+    Usage with exit handling properties.
+
+    Args:
+        msg: string, optional user message to print
+
+    Returns:
+        help message text block
+        will exit program
+    '''
+    try:
+        # pre-process our mode,
+        if len(argv) == 0:
+            pconf['mode'] = 'create'
+            dprint("mode set to default, 'create'")
+        else:
+            if not argv[0].startswith('-'):
+                if argv[0] in ['create', 'destroy', 'list']:
+                    pconf['mode'] = argv.pop(0)
+                elif not mode_arg.startswith('-'):
+                    raise ValueError(
+                        "First arguement must be one of 'create', 'destroy', 'list', got: '{}'".format(
+                    mode_arg))
+            else:
+                pconf['mode'] = 'create'
+            dprint("cli mode: {}".format(pconf['mode']))
+        try:
+            opts, args = getopt.getopt(argv, 'p:l:s:n:r:k:Dhq')
+            dprint("cli arg processing,")
+            for flag, opt in opts:
+                if flag == '-D':
+                    global debug
+                    os.environ['DEBUG'] = 'True'
+                    dprint("processing argv: {}".format(argv))
+                elif flag == '-q':
+                    try:
+                        del os.environ['DEBUG']
+                        dprint("ENV var 'DEBUG' unset, this should never print.")
+                    except:
+                        pass
+                    pconf['quiet'] = True
+                elif flag == '-h' or flag == '--help':
+                    usage('', 0)
+                    sys.exit(0)
+                elif flag == '-r':
+                    pconf['region'] = opt
+                    dprint("region='{}'".format(pconf['region']))
+                elif flag == '-p':
+                    pconf['vic_name'] = opt
+                    dprint("vic_name='{}'".format(pconf['vic_name']))
+                elif flag == '-l':
+                    pconf['log_net_name'] = opt
+                    dprint("log_net_name='{}'".format(pconf['log_net_name']))
+                elif flag == '-s':
+                    pconf['phys_subnet_name'] = opt
+                    dprint("phys_subnet_name='{}'".format(pconf['phys_subnet_name']))
+                elif flag == '-n':
+                    try:
+                        pconf['launch_count'] = int(opt)
+                        dprint("launch_count='{}'".format(pconf['launch_count']))
+                    except Exception as err:
+                        raise ValueError("{0}: Arg -n expects an int, got: {0}".format(err, opt))
+                elif flag == '-k':
+                    pconf['ssh_key_name'] = opt
+                    dprint("ssh_key_name='{}'".format(pconf['ssh_key_name']))
+
+            if pconf['mode'] == 'create':
+                _loadconfig()
+
+            elif pconf['mode'] == 'destroy':
+                pconf['quiet'] = True
+                _loadconfig()
+                print "DESTROY OPERATION: {}".format(sys.argv[0])
+
+            elif pconf['mode'] == 'list':
+                _loadconfig()
+                print "LIST OPERATION: {}".format(sys.argv[0])
+
+        except (getopt.GetoptError, RuntimeError, TypeError, NameError) as err:
+            raise ValueError(err)
+    except Exception as err:
+        raise type(err)('{0} main(): {1}'.format(sys.argv[0], err))
+    sys.exit(0)
+
+
+# Initalize variables which do not have external data dependencies,
+# (e.g. don't make api calls or load config files.)
+try:
+    pconf = vic.configDict()
+    dothere = os.path.dirname(os.path.normpath(sys.argv[0]))
+    myhier = os.path.dirname(dothere)
+    vic_conf= vic.source(str(myhier + '/etc/vic.conf'))
+    me = os.path.basename(sys.argv[0])
+    cmd = me.split('-', 1)[1:][0]
+    try:
+        if os.environ['TMPDIR']:
+            TMPDIR=os.environ['TMPDIR']
+    except:
+        TMPDIR='/tmp'
+except Exception as err:
+    raise type(err)('{0}: {1}'.format(sys.argv[0], err))
+
+if __name__ == '__main__':
+    main(sys.argv[1:])

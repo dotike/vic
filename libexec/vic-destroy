@@ -1,0 +1,772 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*
+'''
+vic-destroy -- Destroy a vic, hierarchically based on vic name or VPC id.
+
+Use the help flag, 'vic destroy -h' for more info.
+
+# TODO: class based destroy handling, (dev, staging, production)
+# TODO: multi-admin "lockout" for high class VICS (production, staging)
+'''
+# @depends: boto3, python (>=2.7)
+__version__ = '0.1'
+__author__ = 'Isaac (.ike) Levy <ike@blackskyresearch.net>'
+
+import os
+import sys
+import getopt
+import boto3
+import vic
+import time
+
+description="Hierarchically destroy a VIC."
+
+try:
+    vic_conf = vic.source(str(os.environ['MYHIER'] + '/etc/vic.conf'))
+    vic_tld = vic_conf['vic_tld']
+    info_domain = 'info.{}'.format(vic_tld)
+    _me = os.path.basename(sys.argv[0])
+    _cmd = _me.split('-', 1)[1:][0]
+except Exception as err:
+    raise type(err)('{0}: {1}'.format(sys.argv[0], err))
+
+def usage(msg=None, _exit=1, _fdout=None):
+    '''
+    Usage with exit handling properties.
+
+    Args:
+        msg: string, optional user message to print
+        _exit: int as exit code
+        _fdout: can be sys.stderr or sys.stdout (or other fd)
+
+    Returns:
+        help message text block
+        will exit program
+    '''
+    _desc = """
+{myname}
+
+  Utility for deleting a VIC and all it's components.
+  Version {version}.
+
+  Used regularly, this utility will:
+    - ask or confirm creation options up front
+      (using aws live data)
+    - delete a vic, in reverse hierarchical order
+      (this stage has many stages, which may fail, and can be resumed using manifest/assets)
+
+  This utility requires that a given AWS account has been initialized for use,
+  please see 'vic init' for further information on AWS account initialization.
+  This utility also operates on one configured AWS account at a time, see
+  'vic config-admin' to set up access to your account.
+
+usage:
+
+  {myname}
+  {myname} [-v] [-y] [-p] <vicname>
+  {myname} [-h]
+
+arguments:
+
+  -y  Yes to all quesitons, accepting default values.
+
+  -v  Verbose, prints human-centric output to stderr.
+
+  -h  Print this help to stdout, and exit zero.
+
+  -p <vicname>
+     A specific user-defined vicname.  This name cannot
+     be arbitrary, but must correspnd to a live vic name.
+     Can be in the format 'vic_name' or 'vic_name.tld'.
+
+see also:
+   vic create -h
+"""
+    if _fdout is None:
+        if _exit == 0:
+            _fdout = sys.stdout
+        else:
+            _fdout = sys.stderr
+
+    print >> _fdout, _desc.format(myname=os.path.basename(sys.argv[0]),
+                                  version=__version__,)
+    _fdout.flush()
+    if msg is not None and msg is not '':
+        print >> _fdout, '\n' + str(msg)
+        _fdout.flush()
+    sys.exit(_exit)
+
+
+def vprint(prettymuchanything='', fd=sys.stderr):
+    '''
+    If verbose mode is set, Prints just about anything to screen.
+
+    Args:
+      prettymuchanything - Usually strings, but just about any python object.
+      Operates on parent context var 'verbose', or ENV 'VERBOSE'.
+
+      fd - file descriptor out, usually 'sys.stderr' or 'sys.stdout'
+         Does not force this file descriptor if program is already redirecting.
+
+    Returns:
+      Returns nothing.
+      Print out put if either:
+         - 'verbose' exists and is not none
+         - ENV var 'VERBOSE' exists and is not none.
+    '''
+    try:
+        if os.environ['VERBOSE']:
+            print >> fd, "# {}".format(str(prettymuchanything))
+        elif verbose:
+            print >> fd, "# {}".format(str(prettymuchanything))
+    except:
+        pass
+
+def yes_no():
+    '''
+    Process a yes/no answer from user input,
+    return True/False, die on bad input.
+    '''
+    try:
+        if pconf.yestoall:
+            vprint("-y yes to all, proceeding without user input.")
+            return True
+
+        user_choice = raw_input()
+        if user_choice.lower() in ['y', 'yes']:
+            return True
+        elif user_choice.lower() in ['n', 'no']:
+            print "Aborting, you can try again any time."
+            return False
+        else:
+            vic.die("Bad input, you can try again any time.")
+
+    except Exception as err:
+        raise type(err)(
+            'yes_no() error: {}'.format(err))
+
+def _loadconfig():
+    '''
+    Loads config needs from files and API calls.
+
+    Args: none.
+    Requires vic configDict object 'pconf', which we add to.
+
+    Returns: nothing.
+    If verbose flag is thrown to program, variables are printed
+    after they are set.
+    '''
+    vprint("processing _loadconfig()")
+
+    for key, val in vic.source(str(os.environ['MYHIER'] + '/etc/vic.conf')).iteritems():
+        vprint("{0}='{1}'".format(key, pconf.alt_set(key, val) ))
+
+    vprint("{0}='{1}'".format('info_domain', pconf.alt_set(
+        'info_domain', 'info.{}'.format(pconf['vic_tld']) )))
+
+    vprint("{0}='{1}'".format('vic_classes', pconf.alt_set(
+        'vic_classes', pconf['vic_class_types'].strip().split(' ') )))
+
+    pconf['consoleurl'] = "https://{0}.signin.aws.amazon.com/console".format(
+        vic.fetch_account_id()[0])
+    vprint("consoleurl='{}'".format(pconf['consoleurl']))
+
+    pconf['user'] = vic.aws_whoami()
+    vprint("user='{}'".format(pconf['user']))
+    pconf['batch_comment'] = '{0} {1} {2}'.format(_me, pconf['user'], vic.wallclock())
+    vprint("batch_comment='{}'".format(pconf['batch_comment']))
+
+def _validvic():
+    '''
+    Validates need from vic name, handles preamble user input.
+
+    Args: none.
+    Requires vic configDict object 'pconf', which we add to.
+
+    Returns: nothing.
+    If verbose flag is thrown to program, additional messages may
+    be printed after they are set.
+
+    '''
+    try:
+        if not pconf['yestoall']:
+            vic.redirect('stdout')
+            if not pconf['vic_name']:
+                print "Which VIC do you wish to destroy?"
+                sys.stdout.write("Type the VIC name, or type '?' for a list of VICS available: ")
+                pconf['vic_choice'] = raw_input()
+                vprint("vic_choice='{}'".format(pconf['vic_choice']))
+                if pconf['vic_choice'] == '?':
+                    print "Querying all global regions for valid VICs..."
+                    print ""
+                    pconf['live_vics'] = vic.list_vics()
+                    print "  name\t\tclass\tregion"
+                    for vic_id in pconf['live_vics'].keys():
+                        vic_id_tags = vic.aws_tags_dict(pconf['live_vics'][vic_id]['Tags'])
+                        # TODO: figure out how to print output like `column -t -s ' '`
+                        print "  {0}\t\t{1}\t{2}".format(
+                            vic_id_tags['Name'],
+                            vic_id_tags['vic_class'],
+                            pconf['live_vics'][vic_id]['region'])
+                    print ""
+                    print "More information for these regions vics:"
+                    print pconf['consoleurl']
+                    print ""
+                    print "Which VIC do you wish to destroy?"
+                    sys.stdout.write("Type the VIC name: ")
+                    pconf['vic_choice'] = raw_input()
+                    vprint("vic_choice='{}'".format(pconf['vic_choice']))
+
+                if not pconf['vic_choice']:
+                    vic.die("You must supply a vic id in the form of 'vic_id' or 'vic_id.tld'.")
+                else:
+                    pconf['vic_name'] = pconf['vic_choice']
+
+        if pconf['vic_name']:
+            vprint("loading live metadadata for VPC")
+            if not pconf['live_vics']:
+                try: # if the vpc has already been deleted, we have nothing,
+                    pconf['live_vics'] = vic.list_vics(pconf['vic_name'])
+                except:
+                    pconf['live_vics'] = {}
+            for vic_id in pconf['live_vics'].keys():
+                vic_id_tags = vic.aws_tags_dict(pconf['live_vics'][vic_id]['Tags'])
+                if vic_id_tags['Name'] == pconf['vic_name']:
+                    pconf['target_vpc_metadict'] = pconf['live_vics'][vic_id]
+                    pconf['target_vpc_tags'] = vic_id_tags
+
+            if '.' in pconf['vic_name']:
+                _shortname = pconf['vic_name'].split('.', 1)[0]
+            else:
+                _shortname = pconf['vic_name']
+            pconf['state_name'] = 'used.{0}.vicname.{1}'.format(
+                _shortname, pconf['info_domain'])
+            vprint("state_name='{}'".format(pconf['state_name']))
+
+        if not pconf['yestoall']:
+            if not pconf['target_vpc_metadict']:
+                print "More information vics in your account:"
+                print pconf['consoleurl']
+                vic.die("The vic name '{}' does not appear to match any live VICS.".format(
+                    pconf['vic_name']))
+            else:
+                print ""
+                print "WARNING: destroy operations are permanent."
+                print "You are about to destroy all VIC objects for '{0}', under VPC '{1}'.".format(
+                    pconf['vic_name'], pconf['target_vpc_metadict']['VpcId'])
+                sys.stdout.write("Are you sure you wish to proceed?: [y/n] ")
+                if not yes_no():
+                    sys.exit(0)
+            vic.redirect()
+    except Exception as err:
+        raise type(err)('_validvic(): {}'.format(err))
+
+def _destroy():
+    '''
+    Assuming all necessary vars are set, (pconf), we check for each type of
+    object, and destroy it.  If missing, we move on.  If failure or error, we
+    raise error and stop.
+
+    Args: none, (assumes pconf configDict)
+
+    Returns: none, but prints conformations to stdout.
+    '''
+    try:
+        try:
+            region = pconf['target_vpc_metadict']['region']
+        except:
+            region = pconf['aws_default_region']
+        vic.set_region(region)
+
+##############################################################################
+        # TODO: unclear what we want to do with VICs still in create state,
+        # but this is the place to handle or communicate this.
+        # check for 'unlock' build state in route53 before proceeding,
+        # throw error to interactive that they may clobber someone's build
+        #
+        #vic.prettyPrint(vic.r53_lookup(name=pconf['state_name'], dns_type='TXT'))
+
+
+##############################################################################
+        # fetch our vpc id, used throughout
+        try:
+            vpc_exists = vic.validate_vic_id(pconf['vic_name'])
+            vprint("VPC named {0} exists as VPC id: {1}".format(
+                pconf['vic_name'], vpc_exists))
+        except:
+            vpc_exists = ''
+            vprint("VPC named {} does not exist.".format(pconf['vic_name']))
+
+##############################################################################
+# worksvic: ec2 svic reservation remmoval check
+# not yet tested with svic instances and reservations
+
+##############################################################################
+# worksvic: security groups remmoval check
+
+# PASS: security groups (which must be attached to a VPC) appear to be deleted
+# properly when the VPC itself is deleted.
+
+##############################################################################
+# Route Tables - pass.  VPC deletion is confirmed to delete it's route tables.
+
+##############################################################################
+# RDS/S3 endpoint remmoval check (not actual RDS/S3 removal)
+
+# WE WILL NOT DESTROY S3 BUCKETS USING THIS TOOLING FOR NOW
+
+        print "REMOVING SERVICE ENDPOINTS FOR VIC: {0}".format(pconf['vic_name'])
+        service_endpoints = vic.list_vpc_endpoints(vic_id=pconf['vic_name'], region=region)
+        if service_endpoints:
+            vic.prettyPrint(service_endpoints)
+        vpc_endpoint_list = service_endpoints.keys()
+        if vpc_endpoint_list:
+            try:
+                kill_endp_cliennt = boto3.client('ec2', region_name=region)
+                kill_endp_response = kill_endp_cliennt.delete_vpc_endpoints(
+                    DryRun=False,
+                    VpcEndpointIds=vpc_endpoint_list,
+                )
+                print "BEWARE: response may lie to you, e.g. 'Unsuccessful' vs 'Successful' is rarely correct:"
+                vic.prettyPrint(kill_endp_response)
+            except Exception as err:
+                raise ValueError(err)
+
+##############################################################################
+        # remove all instances belonging to this VIC
+        print "REMOVING ALL INSTANCES BELONGING TO VIC: {0}".format(pconf['vic_name'])
+        vic_instances = vic.list_vic_instances(pconf['vic_name'])
+        if vic_instances:
+            vic.prettyPrint(vic_instances)
+
+        if vic_instances:
+            instance_kill_list = []
+            for ins_id, ins_meta in vic_instances.iteritems():
+                try:
+                    ins_named = ins_meta['TagSane']['Name']
+                except:
+                    ins_named = "NoName"
+                print "STACKING INSTANCE FOR TERMINATION: {0} {1}".format(ins_id, ins_named)
+                vic.upsert_list(instance_kill_list, ins_id)
+            print "ABOUT TO TERMINATE {} VIC_INSTANCES CONTAINED IN THIS VIC".format(len(instance_kill_list))
+            try:
+                killclient = boto3.client('ec2', region_name=region)
+                killresponse = killclient.terminate_instances(
+                    InstanceIds=instance_kill_list,
+                    DryRun=False
+                )
+                vic.prettyPrint(killresponse)
+            except Exception as err:
+                raise ValueError(err)
+
+            # crude, provide time for termination requests to take effect
+            # looping variations have edge cases we can't see until way down
+            # the chain, like IGW bindings clearing for hosts with public
+            # IP addresses, etc...
+            time.sleep(6)
+
+##############################################################################
+        # remove bootstrap ssh key named for this VIC,
+        key_name = "bootstrap.{}".format(pconf['vic_name'])
+        key_exists_meta = vic.list_key_pairs(vic_id=pconf['vic_name'])
+        for onekey_name, onekey_dict in key_exists_meta.iteritems():
+            if onekey_name == key_name:
+                print(
+                    "KEY EXISTS AS '{1}', DELETING KEY WITH FINGERPRINT '{0}'".format(
+                    onekey_dict['KeyFingerprint'], onekey_name))
+                try:
+                    keyclient = boto3.client('ec2', region_name=region)
+                    keyresponse = keyclient.delete_key_pair(
+                        KeyName=key_name,
+                        DryRun=False,
+                    )
+                    vic.prettyPrint(keyresponse)
+                except Exception as err:
+                    raise ValueError(err)
+
+##############################################################################
+        # acl subnet assignments to default acl,
+
+
+        if vpc_exists:
+            vprint("check acl associations with subnets, move subnets to default acl")
+            existing_acls = vic.list_network_acls(
+                vic_id=pconf['vic_name'], region=region)
+            vic.prettyPrint(existing_acls)
+
+            default_acl_meta = {}
+            all_associations = []
+            for acl_id, acl_meta in existing_acls.iteritems():
+                if acl_meta['VpcId'] == vpc_exists:
+                    if acl_meta['IsDefault']:
+                        default_acl_meta = acl_meta
+                for association in acl_meta['Associations']:
+                    vic.upsert_list(all_associations, association)
+            vic.prettyPrint(default_acl_meta)
+            vic.prettyPrint(all_associations)
+
+            for association in all_associations:
+                try:
+                    replaceclient = boto3.client('ec2', region_name=region)
+                    replaceresponse = replaceclient.replace_network_acl_association(
+                        AssociationId=association['NetworkAclAssociationId'],
+                        DryRun=False,
+                        NetworkAclId=default_acl_meta['NetworkAclId'],
+                    )
+                    vic.prettyPrint(replaceresponse)
+                except Exception as err:
+                    raise ValueError(err)
+
+##############################################################################
+        # acl destroy, from hierarchical relation to vpc
+
+        if vpc_exists:
+            vprint("check acls for deletion")
+            existing_acls = vic.list_network_acls(
+                vic_id=pconf['vic_name'], region=region)
+            vic.prettyPrint(existing_acls)
+            for acl_id, acl_meta in existing_acls.iteritems():
+                try:   # belt and suspenders
+                    if acl_meta['IsDefault']:
+                        vprint("Bypassing Default ACL, vpc deletion stage will reap: '{}'".format(acl_id))
+                    elif acl_meta['VpcId'] == vpc_exists:
+                        vprint("Deleting acl: '{}'".format(acl_id))
+                        aclclient = boto3.client('ec2', region_name=region)
+                        aclresponse = aclclient.delete_network_acl(
+                            DryRun=False,
+                            NetworkAclId=acl_id,
+                        )
+                        vic.prettyPrint(aclresponse)
+                except Exception as err:
+                    raise ValueError(err)
+
+##############################################################################
+# note: route table gets automatically reaped with VPC deletion.
+##############################################################################
+
+        # igw destroy, requisite for VPC destroy.
+        vprint("check igw deletion")
+        igw_attached = {}
+        all_igws = vic.list_igw(region=region)
+        for igw_name, igw_meta in all_igws.iteritems():
+            for attached in igw_meta['Attachments']:
+                if attached['VpcId'] == vpc_exists:
+                    igw_attached[igw_name] = igw_meta
+        all_igws = {}
+
+        igwclient = boto3.client('ec2', region_name=region)
+        for attached_key, attached_dict in igw_attached.iteritems():
+            try:
+                vprint("Detaching '{}' from '{}'.".format(
+                    attached_key, vpc_exists))
+                igwresponse = igwclient.detach_internet_gateway(
+                    DryRun=False,
+                    InternetGatewayId=attached_key,
+                    VpcId=vpc_exists,
+                )
+                vic.prettyPrint(igwresponse)
+                print "sleeping 6 seconds for igw detach to settle..."
+                time.sleep(6) # just sleep.  Too difficult to reap, catch
+                              # orphaned igw in cleanup utils later.
+                vprint("Delete attempt: '{}'".format(attached_key))
+                deligwresponse = igwclient.delete_internet_gateway( 
+                    DryRun=False, 
+                    InternetGatewayId=attached_key,
+                ) 
+                vic.prettyPrint(deligwresponse)
+            except Exception as err:
+                raise ValueError(err)
+
+##############################################################################
+        # subnets destroy, from hierarchical relation to vpc
+
+        # we have to check for valid vpc existence for a given VIC, because
+        # of an AWS API bug whereby VPC subnets may be returned as
+        # "'State': 'available'" after their parent VPC is deleted. Mindblown.
+        # see vpc_exists above
+
+        def _delete_subnet(subnet_id):
+            try:
+                print "deleting subnet: {}".format(subnet_id)
+                subnet_client = boto3.client('ec2', region_name=region)
+                #subnet_client = boto3.client('ec2')
+                response = subnet_client.delete_subnet(
+                    SubnetId=subnet_id,
+                    DryRun=False,
+                )
+                vic.prettyPrint(response)
+            except Exception as err:
+                raise ValueError(err)
+
+        if vpc_exists:
+            # list subnets associated with our VIC, if any,
+            #vic.prettyPrint(vic.list_vic_subnets(vic_id=pconf['vic_name'], sregion=region))
+            try:
+               live_subs = vic.list_vic_subnets(vic_id=pconf['vic_name'], sregion=region)
+            except:
+               live_subs = {}
+               vprint("There appear to be no subnets belonging to named VPC.")
+            print live_subs
+            for subkey, subdict in live_subs.iteritems():
+                if subdict['State'] == 'available':
+                    vprint("'{0}' in state '{1}' for deletion.".format(subkey, subdict['State']))
+                    subdict['TagsSane'] = vic.aws_tags_dict(subdict['Tags'])
+                    if subdict['VpcId'] == pconf['target_vpc_metadict']['VpcId']:
+                        vprint("{0} belongs to VPC {1}, deleting it now".format(subkey, subdict['VpcId']))
+                        # delete each one, checking metadata for VPC id before each deletion.
+                        _delete_subnet(subkey)
+            print "Sleeping 20 seconds, to provide time for AWS networking to coalesce before VPC deletion..."
+            time.sleep(20)
+        print("SUBNETS DELETE: passed.")
+
+##############################################################################
+        # vpc destroy
+
+        try:
+            vpc_exists = vic.validate_vic_id(pconf['vic_name'])
+            print "VPC named {0} exists as VPC id: {1}".format(
+                pconf['vic_name'], vpc_exists)
+        except:
+            vpc_exists = ''
+            print "VPC named {} does not exist.".format(pconf['vic_name'])
+
+        print "vpc exists as: '{}'".format(vpc_exists)
+
+        try:
+            if vpc_exists:
+                try:
+                    vpcclient = boto3.client('ec2', region_name=region)
+                    vpcresponse = vpcclient.delete_vpc(
+                        VpcId=vpc_exists,
+                        DryRun=False
+                    )
+                    vic.prettyPrint(vpcresponse)
+                except Exception as err:
+                    raise ValueError(err)
+# Drop a looper in here... (also one for IGW destroy?)
+# worksvic, bughunt, this commonly fails apparently based on routes/network/other objects
+# not being freed/cleared on the AWS side.  Works fine from the console...
+        except Exception as err_vpc:
+            print ""
+            print ""
+            print "Error deleting vpc '{}', you may need to delete it manually from the console:".format(
+                vpc_exists)
+            print pconf['consoleurl']
+            raise ValueError("VPC delete stage error: ".format(err_vpc))
+
+        print("VPC DESTROY: passed.")
+
+##############################################################################
+        # dns names destroy
+        # This is not in the same order as creating a VIC, because we need
+        # the names and zone in order to perform various lookups to delete
+        # things like the vpc itself.
+        try:
+            zone_namedict = vic.list_dns_names(zone=pconf['vic_name']) # dns_type='', show_zone=False)
+        except:
+            zone_namedict = {}
+        if zone_namedict:
+            pconf['zone_id'] = zone_namedict['zone_id']
+            for one_name in zone_namedict['names']:
+                # leave SOA and NS alone, deleting these can have *odd* AWS consequences:
+                if one_name['Type'] != 'SOA' and one_name['Type'] != 'NS':
+                    # don't batch delete change_resource_record_sets() because we will run
+                    # into pagination complication.  This sucks, but we gotta just delete
+                    # each name with an individual API call or we overcomplicate things
+                    # to the point of being un-debuggable inane.
+                    print one_name['Name'], one_name['Type']
+                    nameconn = boto3.client('route53')
+                    nameresponse = nameconn.change_resource_record_sets(
+                        HostedZoneId = pconf['zone_id'],
+                        ChangeBatch = {
+                            'Comment': pconf['batch_comment'],
+                            'Changes': [
+                                {
+                                    'Action': 'DELETE',
+                                    'ResourceRecordSet': {
+                                        'Name': one_name['Name'],
+                                        'Type': one_name['Type'],
+                                        'TTL': one_name['TTL'],
+                                        'ResourceRecords': one_name['ResourceRecords'],
+                                    },
+                                },
+                            ],
+                        },
+                    )
+                    vic.prettyPrint(nameresponse)
+        print("ZONE RECORDS DELETE: passed.")
+
+##############################################################################
+        # dns zone destroy
+        try:
+            # remember, we may already have pconf['zone_id'] from zones list above
+            pconf['private_zone_id'] = vic.tld_to_zone_id(pconf['vic_name'])
+            if pconf['private_zone_id']:
+                vprint("private zone '{0}' exists as id '{1}'.".format(
+                    pconf['vic_name'], pconf['private_zone_id']))
+        except:
+            vprint("No rotute53 private zone in rout53 for VIC: '{}'".format(
+                _target_name))
+
+        if pconf['private_zone_id']:
+            print "deleting private zone '{0}', id '{1}'.".format(
+                pconf['vic_name'], pconf['private_zone_id'])
+            zoneclient = boto3.client('route53')
+            zoneresponse = zoneclient.delete_hosted_zone(
+                Id=pconf['private_zone_id']
+            )
+            vic.prettyPrint(zoneresponse)
+
+        print("ZONE DELETE: passed.")
+
+##############################################################################
+        # route53 'used' names in info domain
+        #   - vic name
+        #   - vic netblock
+        # (releases name and netblock back to pool for use)
+
+        try:
+            vicname_used_lookup = vic.r53_lookup(name=pconf['state_name'], dns_type='TXT')
+        except:
+            vicname_used_lookup = []
+
+        if vicname_used_lookup:
+            singular_create_uid = []
+            for value in vicname_used_lookup:
+                if len(value) == 36: # we have matched our UID
+                    vic.upsert_list(singular_create_uid, value)
+            if len(singular_create_uid) > 1:
+                msg = "Name has more than two values which appear to be UID create strings.  " + \
+                      "You may need to finish this off by finding the create UID string for the " + \
+                      "domain '{0}', and manually delete both the 'vicname' and 'vicnet' info names " + \
+                      "using the aws console <{1}>: {2}".format(
+                          pconf['state_name'],
+                          pconf['consoleurl'],
+                          singular_create_uid
+                )
+                raise ValueError(msg)
+            else:
+                pconf['create_uid'] = singular_create_uid[0]
+
+            # now we get real dirty, because route53 names have no tags,
+            all_vicnet_names = vic.list_dns_names(name='*vicnet.{}'.format(pconf['info_domain']))
+            pconf['zone_id'] = all_vicnet_names['zone_id']
+            for namedict in all_vicnet_names['names']:
+                # strip down to only used names,
+                if namedict['Name'].startswith('used.'):
+                    for rrecord in namedict['ResourceRecords']:
+                        if rrecord['Value'] == '"{}"'.format(pconf['create_uid']):
+                            pconf['used_net_name'] = namedict['Name']
+                            vprint("found vicnet name match: '{}'".format(pconf['used_net_name']))
+                            # validate the name
+                            vicnet_used_lookup = vic.r53_lookup(name=pconf['used_net_name'], dns_type='TXT')
+
+        # only delete if we can confidently delete them both,
+        if pconf['used_net_name'] and pconf['state_name']:
+            vprint("'{0}' '{1}'".format(pconf['state_name'], pconf['used_net_name']))
+
+            used_name_list = []
+            # don't botch this order, net first:
+            vic.upsert_list(used_name_list,
+                vic.list_dns_names(name=pconf['used_net_name'], zone=pconf['info_domain'], dns_type='TXT')['names'][0])
+            vic.upsert_list(used_name_list,
+                vic.list_dns_names(name=pconf['state_name'], zone=pconf['info_domain'], dns_type='TXT')['names'][0])
+
+            for used_name in used_name_list:
+                try:
+                    nameconn = boto3.client('route53')
+                    nameresponse = nameconn.change_resource_record_sets(
+                        HostedZoneId = pconf['zone_id'],
+                        ChangeBatch = {
+                            'Comment': pconf['batch_comment'],
+                            'Changes': [
+                                {
+                                    'Action': 'DELETE',
+                                    'ResourceRecordSet': {
+                                        'Name': used_name['Name'],
+                                        'Type': used_name['Type'],
+                                        'TTL': used_name['TTL'],
+                                        'ResourceRecords': used_name['ResourceRecords'],
+                                    },
+                                },
+                            ],
+                        },
+                    )
+                    vic.prettyPrint(nameresponse)
+                except Exception as err:
+                    raise ValueError(err)
+        else:
+            print "WARNING: cannot complete final step:"
+            print "(info names may already be deleted)"
+            msg = "We are unable to remove the 'used...{0}' domains which are used to reserve vic name and neblock.  You may need to find and delete them off by finding the create UID string for the domain '{1}', and manually delete both the 'vicname' and 'vicnet' info names using the aws console <{2}>.".format(
+                      pconf['info_domain'],
+                      pconf['state_name'],
+                      pconf['consoleurl']
+            )
+            print msg
+
+        print("INFO RECORDS DELETE: passed.")
+
+        vic.set_region()
+    except Exception as err:
+        raise type(err)('_destroy(): {}'.format(err))
+
+def main(argv):
+    '''
+    Handles command line input.
+
+    Args: argv
+
+    Returns: That depends.  -h for usage/help.
+    '''
+    try:
+        try:
+            opts, args = getopt.getopt(argv, 'p:avhy')
+            for flag, opt in opts:
+                if flag == '-v':
+                    global verbose
+                    os.environ['VERBOSE'] = 'True'
+                    vprint("processing argv: {}".format(argv))
+                elif flag == '-a':
+                    vic.afail()
+                elif flag == '-h' or flag == '--help':
+                    usage('', 0)
+                    sys.exit(0)
+                elif flag == '-y':
+                    pconf['yestoall'] = True
+                    vprint("yestoall='{}'".format(pconf['yestoall']))
+                elif flag == '-p':
+                    pconf['vic_name'] = opt
+                    vprint("vic_name='{}'".format(pconf['vic_name']))
+
+            if not pconf['vic_name']:
+                vic.die("VIC name args required e.g. '-p <vic_name.tld>', '{} -h' for all options.".format(
+                    _me))
+            _loadconfig()
+            _validvic()
+            _destroy()
+
+            print "DESTROY OPERATION FINISHED FOR '{}'.".format(pconf['vic_name'])
+        except (getopt.GetoptError, RuntimeError, TypeError, NameError) as err:
+            raise ValueError(err)
+
+    except Exception as err:
+        raise type(err)('{0} main(): {1}'.format(sys.argv[0], err))
+    sys.exit(0)
+
+# Initialize variables which do not have external data dependencies,
+# e.g. don't make api calls or load config files.
+try:
+    pconf = vic.configDict()
+    _me = os.path.basename(sys.argv[0])
+    _cmd = _me.split('-', 1)[1:][0]
+    try:
+        if os.environ['TMPDIR']:
+            TMPDIR=os.environ['TMPDIR']
+    except:
+        TMPDIR='/tmp'
+except Exception as err:
+    raise type(err)('{0}: {1}'.format(sys.argv[0], err))
+
+if __name__ == '__main__':
+    main(sys.argv[1:])

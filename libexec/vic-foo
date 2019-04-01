@@ -1,0 +1,10 @@
+#!/bin/sh
+
+# intended to show successful exit state for combinator tooling.
+
+echo "Running $0 with the following options:"
+echo "$@"
+echo "AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}"
+echo "AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}"
+
+true

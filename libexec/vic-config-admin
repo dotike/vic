@@ -1,0 +1,174 @@
+#!/bin/sh
+
+# Interactive-only vic admin config generator, safe to run any time.
+# 
+# Utility aims to enforce policy by design, but expects a capable
+# operator, and therefore does not do everything for you.
+#
+# Respected ENV overrides:
+# TMPDIR - defaults to /tmp
+
+yell() { echo "$0: $*" >&2; }
+die() { yell "$*"; exit 111; }
+try() { "$@" || die "cannot $*"; }
+
+debug() { [ -n "$DEBUG" ] && echo "$*" >&2; }
+chirp() { echo "$*" >&2; }
+
+cleanup() {
+# remove temp dir
+rm -rf "${_tmp_src}"
+[ $DEBUG ] && verbose "Removing temp dir: ${_tmp_src}"
+}
+
+octalperms() {
+# given a file path, returns octal file string
+if [ -e "${1}" ] ; then
+  try stat -r ${1} | awk '{print $3}' | sed 's/^.*\(.\{4\}\)$/\1/'
+fi
+}
+
+to_proceed() {
+# Asks if user wishes to proceed.
+# Optional argument string will be printed for the user.
+[ ${_count:-0} -ge 5 ] && die "Aborting after ${_count} unknown answers."
+_count=$((_count+1)) # keep it portable
+printf "${*:-Do you wish to proceed? [y/n]: }"
+read proceed 
+  if [ "${proceed}" = "n" ] ; then
+    exit 0
+  elif [ ! "${proceed}" = "y" ] ; then
+    printf "Bad answer, try again.  "
+    to_proceed
+  fi
+}
+
+permscheck() {
+# Checks if private permissions are kosher,
+_perms_aws_private_config="`octalperms ${aws_private_config}`"
+  debug "_perms_aws_private_config=${_perms_aws_private_config}"
+if [ ! ${_perms_aws_private_config} = 0600 ] ; then
+  if [ "${remote_bypass}" ] ; then
+    logger "SECURITY NOTICE: UNPROTECTED PRIVATE CONFIG FILE! ${_me_cmd}: ${SSH_CONNECTION}"
+    chirp "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@"
+    chirp "@   SECURITY NOTICE: UNPROTECTED PRIVATE CONFIG FILE!     @"
+    chirp "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@"
+    chirp "Permissions ${_perms_aws_private_config} for '${aws_private_config}' are too open."
+    chirp "It is required that your private auth files are NOT accessible by others, e.g., 0600."
+    chirp ""
+    chirp "- REMOVE THIS AUTH MATERIAL FROM THIS HOST AS SOON AS POSSIBLE"
+    chirp "- NOTIFY YOUR TEAMMATES TO RE-GENERATE NEW API KEYS"
+    chirp ""
+    die "Aborting."
+
+  fi
+  chirp "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@"
+  chirp "@        WARNING: UNPROTECTED PRIVATE CONFIG FILE!        @"
+  chirp "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@"
+  chirp "Permissions ${_perms_aws_private_config} for '${aws_private_config}' are too open."
+  chirp "It is required that your private auth files are NOT accessible by others, e.g., 0600."
+  die "Aborting."
+fi
+}
+
+ask_and_config() {
+# ask user for necessary input to create private config on their laptop,
+# paying attention to the handling of auth secrets- in program and on disk.
+# Don't leak the important stuff in debug here.
+echo ""
+
+[ "$edit_mode" ] || printf "Enter AWS API Access key ID: "
+[ "$edit_mode" ] && printf "Enter AWS API Access key ID (empty to keep existing): "
+read u_vic_aws_access_key_id
+u_vic_aws_access_key_id="${u_vic_aws_access_key_id:-$VIC_AWS_ACCESS_KEY_ID}"
+
+stty_orig=`stty -g`
+stty -echo
+[ "$edit_mode" ] || printf "Enter AWS API Secret access key (does not print to screen): "
+[ "$edit_mode" ] && printf "Enter AWS API Secret access key (empty to keep existing, does not print to screen): "
+read u_vic_aws_secret_access_key
+stty "${stty_orig}"
+u_vic_aws_secret_access_key="${u_vic_aws_secret_access_key:-$VIC_AWS_SECRET_ACCESS_KEY}"
+
+echo ""
+
+trap 'cleanup' 0 1 2 3 6 14 15
+try mkdir -p "${vic_local_config_dir}"
+_tmp_src="`try mktemp ${TMPDIR}/${0##*/}.XXXX`"
+echo "# ${VERSION} `date`" > "${_tmp_src}"
+try chmod 0600 "${_tmp_src}"
+try cat "${template_config}" >> "${_tmp_src}"
+# string processing gets dangerous for secrets, be simpler here:
+echo "VIC_AWS_ACCESS_KEY_ID='${u_vic_aws_access_key_id}'" >> "${_tmp_src}"
+echo "VIC_AWS_SECRET_ACCESS_KEY='${u_vic_aws_secret_access_key}'" >> "${_tmp_src}"
+try mv "${_tmp_src}" "${aws_private_config}"
+# one more time,
+try chmod 0600 "${aws_private_config}"
+cleanup
+
+permscheck
+echo ""
+echo "Your private AWS VIC config has been saved in '${aws_private_config}'."
+}
+
+
+## vars
+
+dothere=$(cd "${0%/*}" 2>/dev/null; echo "`pwd -L`")
+  debug "# dothere=$dothere"
+myhier="${dothere%/*}"
+  debug "# myhier=$myhier"
+
+description="Configure AWS auth specifically for VIC tooling, completely separated from exisiting AWS auth or roles.  Interactive tool only, no arguments or flags accepted."
+_me_cmd="`echo ${0##*/} | try cut -d '-' -f 2-5`"
+
+template_config="${myhier}/lib/vic_templates/aws_private.config"
+
+# This is private config data, there is no room to muck about with
+# PATH style searching here- so, location non-negotiable:
+vic_local_config_dir="${HOME:?Something is very wrong.}/.vic"
+  debug "vic_local_config_dir=${vic_local_config_dir}"
+aws_private_config="${vic_local_config_dir}/aws_private.conf"
+  debug "aws_private_config=${aws_private_config}"
+TMPDIR="${TMPDIR:-/tmp}"
+  debug "TMPDIR=${TMPDIR}"
+
+
+## action
+
+# Description flag, called by combinator tooling help.
+if [ "${1}" = "-d" ] ; then
+  echo "${_me_cmd} - ${description:-No description yet.}"
+  exit 0
+fi
+
+if [ ! "${SSH_CONNECTION}" = "" ] ; then 
+  logger "SSH WARNING, ${_me_cmd}: ${SSH_CONNECTION}"
+  remote_bypass=1
+  permscheck
+  echo ""
+  echo "SSH WARNNING: You appear to be running "${_me_cmd}" inside an ssh connected shell."
+  echo "Private authentication configuration should not rest on shared hosts, much like ssh private key conventions.  If you choose to continue, you are bypassing safety measures, and responsible for your actions."
+  echo ""
+  to_proceed "Do you wish to bypass safe AWS credental handling and continue? [y/n]: "
+fi
+
+# Check for existing AWS config
+if [ ! -e "${aws_private_config}" ] ; then
+  echo ""
+  to_proceed "AWS VIC private config does not exist, '${aws_private_config}', do you wish to create it now? [y/n]: "
+  edit_mode=''
+
+else
+  edit_mode=1
+  permscheck
+  echo ""
+  #echo "Config Exists, '${aws_private_config}'.  Continuing will allow for existing values to be kept, but will overwrite the file."
+  echo "WARNING, config exists '${aws_private_config}'.  Continuing will allow for existing values to be kept, but will overwrite the file."
+  to_proceed
+  try . ${aws_private_config}
+fi
+
+ask_and_config
+  
+true
