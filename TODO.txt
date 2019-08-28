@@ -1,0 +1,4 @@
+- Consider removing underscores/dashes from the canonical VIC name.
+- Rationalize DNS in self-contained manner, (none of the lambda hyjinks)
+- Handle the bootstrap, considering instance launch tooling consistency
+- (re)write instance launch tooling
