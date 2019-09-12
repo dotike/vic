@@ -5,6 +5,10 @@
 
 - Rationalize DNS in self-contained manner, (none of the lambda hyjinks)
 
+- INIT: Rationalize optional public domain name (e.g. vic-name.publicname.tld)
+    - apply to gateway hosts
+    - apply to any other ingress/egress
+
 # nice to have
 - Consider removing underscores/dashes from the canonical VIC name.
 
