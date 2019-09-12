@@ -1,4 +1,11 @@
-- Consider removing underscores/dashes from the canonical VIC name.
-- Rationalize DNS in self-contained manner, (none of the lambda hyjinks)
-- Handle the bootstrap, considering instance launch tooling consistency
+# specific needs,
+- Needs an installer completed install(1) via sh(1) will do nicely.
+
 - (re)write instance launch tooling
+
+- Rationalize DNS in self-contained manner, (none of the lambda hyjinks)
+
+# nice to have
+- Consider removing underscores/dashes from the canonical VIC name.
+
+- Handle the bootstrap, considering instance launch tooling consistency
