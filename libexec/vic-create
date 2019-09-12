@@ -2671,12 +2671,12 @@ You can try to continue this build any time by running:
                                     },
                                 ],
                         )
-                        # TODO: talk to @ianw
+                        # TODO: can hook IAM host roles here
                         #UserData='string', # bootstrap
                         #IamInstanceProfile={
                         #    'Arn': 'string',
                         #    'Name': 'string'
-                        #}, # talk to @ianw
+                        #},
                         _report_print("INSTANCE CREATED: {}".format(insreturn))
                 except Exception as err:
                     raise ValueError(err)
