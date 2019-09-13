@@ -1312,8 +1312,10 @@ def list_default_amis(region='', configpath=None):
                 )
                 for each_ami in amiresponse['Images']:
                     if each_ami['OwnerId'] == vic_config['ami_default_search_owner_id']:
-                        each_ami['region'] = _region
-                        ami_return[each_ami['ImageId']] = each_ami
+                        if each_ami['VirtualizationType'] == 'hvm':
+                            if each_ami.get('RootDeviceType') == 'ebs':
+                                each_ami['region'] = _region
+                                ami_return[each_ami['ImageId']] = each_ami
 
             except Exception as err:
                 raise ValueError(err)
