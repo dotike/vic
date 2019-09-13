@@ -189,12 +189,21 @@ def main(argv):
 
                     # Example,
                     #vic.pVpcIdrettyPrint(vic.list_igw())
+                    ami_default_search_description="Canonical, Ubuntu, 16.04 LTS, amd64 xenial image build on 2019-06-28"
+                    biglist = vic.list_default_amis(region='us-east-2')
+                    #for ami, meta in biglist.iteritems():
+                        #print ami, meta['region'], meta['RootDeviceType']
+                        #if ami == 'ami-09c094f89ad43f4e0':
+                        #    vic.prettyPrint(meta)
+                        #if ami == 'ami-0f93b5fd8f220e428':
+                        #    vic.prettyPrint(meta)
+                    vic.prettyPrint(biglist)
 
                     #vic.prettyPrint(vic.list_iam_roles())
                     #print " ##############################################################################"
                     #vic.prettyPrint(vic.list_iam_roles(vic_id='light_catimor.vic'))
                     #print " ##############################################################################"
-                    vic.prettyPrint(vic.list_iam_roles(vic_id='light_catimor.vic', show_policy=True))
+                    #vic.prettyPrint(vic.list_iam_roles(vic_id='light_catimor.vic', show_policy=True))
                     #print " ##############################################################################"
                     #vic.prettyPrint(vic.list_sqs_queues(vic_id='light_peaberry.vic'))
                     #print " ##############################################################################"
