@@ -163,7 +163,7 @@ def squash(inobj, path='', sep='', firstrun=True):
     as the expanded value, which is often useful for understanding the data
     while working with it.
 
-    Note that all object key names may be mutated to match shell compatable
+    Note that all object key names may be mutated to match shell compatible
     naming convention.
     All values are handled as strings wrapped in single quotes to prevent
     expansion on use.  Int, float, complex, number values are expressed
