@@ -118,7 +118,7 @@ options:
 
   -i <instance-id>
       Modes: 'destroy' and 'list'.
-      If mixed with incompatable options, we will raise the appropriate error.
+      If mixed with incompatible options, we will raise the appropriate error.
       Modes: 'destroy', 'list'
 
   -p <vicname>
