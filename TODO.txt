@@ -13,3 +13,13 @@
 - Consider removing underscores/dashes from the canonical VIC name.
 
 - Handle the bootstrap, considering instance launch tooling consistency
+
+
+
+# Just bugs
+
+Greg Wohletz 3:42 PM
+minor nit create claims to have a -l option in the help but that option does not appear to actually exist ValueError: /Users/gregory.wohletz/addepar/src/vic/libexec/vic-create main(): option -l not recognized
+ike.levy 3:43 PM
+noted, marking it in TODO fixes
+oh yeah, “list names”
