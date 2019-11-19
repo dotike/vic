@@ -23,3 +23,10 @@ minor nit create claims to have a -l option in the help but that option does not
 ike.levy 3:43 PM
 noted, marking it in TODO fixes
 oh yeah, “list names”
+
+
+Mikael Hakansson Today at 3:48 PM
+Does -p option work on create, it seem to be that it is ignored
+1 reply
+ike.levy  < 1 minute ago
+looks like no, and looks related to -l which @Greg Wohletz pointed out
