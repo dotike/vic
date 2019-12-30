@@ -35,7 +35,7 @@ https://github.com/tehmaze/ipcalc/graphs/contributors
 
 from __future__ import print_function
 
-__version__ = '1.99.0'
+__version__ = "1.99.0"
 
 
 import re
@@ -44,7 +44,7 @@ import six
 
 MAX_IPV6 = (1 << 128) - 1
 MAX_IPV4 = (1 << 32) - 1
-BASE_6TO4 = (0x2002 << 112)
+BASE_6TO4 = 0x2002 << 112
 
 
 class IP(object):
@@ -65,12 +65,25 @@ class IP(object):
 
     # Hex-to-Bin conversion masks
     _bitmask = {
-        '0': '0000', '1': '0001', '2': '0010', '3': '0011',
-        '4': '0100', '5': '0101', '6': '0110', '7': '0111',
-        '8': '1000', '9': '1001', 'a': '1010', 'b': '1011',
-        'c': '1100', 'd': '1101', 'e': '1110', 'f': '1111'
+        "0": "0000",
+        "1": "0001",
+        "2": "0010",
+        "3": "0011",
+        "4": "0100",
+        "5": "0101",
+        "6": "0110",
+        "7": "0111",
+        "8": "1000",
+        "9": "1001",
+        "a": "1010",
+        "b": "1011",
+        "c": "1100",
+        "d": "1101",
+        "e": "1110",
+        "f": "1111",
     }
 
+    # fmt: off
     # IP range specific information, see IANA allocations.
     _range = {
         # http://www.iana.org/assignments/iana-ipv4-special-registry/iana-ipv4-special-registry.xhtml
@@ -111,6 +124,7 @@ class IP(object):
             '1111111010':                       'LINK-LOCAL',     # fe80::/10
         }
     }
+    # fmt: on
 
     def __init__(self, ip, mask=None, version=0):
         """Initialize a new IPv4 or IPv6 address."""
@@ -118,7 +132,7 @@ class IP(object):
         self.v = 0
         # Parse input
         if ip is None:
-            raise ValueError('Can not pass None')
+            raise ValueError("Can not pass None")
         elif isinstance(ip, IP):
             self.ip = ip.ip
             self.dq = ip.dq
@@ -134,16 +148,16 @@ class IP(object):
                 self.dq = self._itodq(ip)
         else:
             # network identifier
-            if '%' in ip:
-                ip = ip.split('%', 1)[0]
+            if "%" in ip:
+                ip = ip.split("%", 1)[0]
             # If string is in CIDR or netmask notation
-            if '/' in ip:
-                ip, mask = ip.split('/', 1)
+            if "/" in ip:
+                ip, mask = ip.split("/", 1)
                 self.mask = mask
             self.v = version or 0
             self.dq = ip
             self.ip = self._dqtoi(ip)
-            assert self.v != 0, 'Could not parse input'
+            assert self.v != 0, "Could not parse input"
         # Netmask defaults to one ip
         if self.mask is None:
             self.mask = {4: 32, 6: 128}[self.v]
@@ -152,7 +166,7 @@ class IP(object):
             self.mask = int(self.mask)
         # Netmask is in subnet notation
         elif isinstance(self.mask, six.string_types):
-            limit = [32, 128][':' in self.mask]
+            limit = [32, 128][":" in self.mask]
             inverted = ~self._dqtoi(self.mask)
             if inverted == -1:
                 self.mask = 0
@@ -160,17 +174,17 @@ class IP(object):
                 count = 0
                 while inverted & pow(2, count):
                     count += 1
-                self.mask = (limit - count)
+                self.mask = limit - count
         else:
-            raise ValueError('Invalid netmask')
+            raise ValueError("Invalid netmask")
         # Validate subnet size
         if self.v == 6:
             self.dq = self._itodq(self.ip)
             if not 0 <= self.mask <= 128:
-                raise ValueError('IPv6 subnet size must be between 0 and 128')
+                raise ValueError("IPv6 subnet size must be between 0 and 128")
         elif self.v == 4:
             if not 0 <= self.mask <= 32:
-                raise ValueError('IPv4 subnet size must be between 0 and 32')
+                raise ValueError("IPv4 subnet size must be between 0 and 32")
 
     def bin(self):
         """Full-length binary representation of the IP address.
@@ -180,7 +194,7 @@ class IP(object):
         01111111000000000000000000000001
         """
         bits = self.v == 4 and 32 or 128
-        return bin(self.ip).split('b')[1].rjust(bits, '0')
+        return bin(self.ip).split("b")[1].rjust(bits, "0")
 
     def hex(self):
         """Full-length hexadecimal representation of the IP address.
@@ -190,9 +204,9 @@ class IP(object):
         7f000001
         """
         if self.v == 4:
-            return '%08x' % self.ip
+            return "%08x" % self.ip
         else:
-            return '%032x' % self.ip
+            return "%032x" % self.ip
 
     def subnet(self):
         """CIDR subnet size."""
@@ -218,16 +232,16 @@ class IP(object):
         for i in range(len(b), 0, -1):
             if b[:i] in self._range[self.v]:
                 return self._range[self.v][b[:i]]
-        return 'UNKNOWN'
+        return "UNKNOWN"
 
     def _dqtoi(self, dq):
         """Convert dotquad or hextet to long."""
         # hex notation
-        if dq.startswith('0x'):
+        if dq.startswith("0x"):
             return self._dqtoi_hex(dq)
 
         # IPv6
-        if ':' in dq:
+        if ":" in dq:
             return self._dqtoi_ipv6(dq)
         elif len(dq) == 32:
             # Assume full heximal notation
@@ -235,15 +249,15 @@ class IP(object):
             return int(dq, 16)
 
         # IPv4
-        if '.' in dq:
+        if "." in dq:
             return self._dqtoi_ipv4(dq)
 
-        raise ValueError('Invalid address input')
+        raise ValueError("Invalid address input")
 
     def _dqtoi_hex(self, dq):
         ip = int(dq[2:], 16)
         if ip > MAX_IPV6:
-            raise ValueError('%s: IP address is bigger than 2^128' % dq)
+            raise ValueError("%s: IP address is bigger than 2^128" % dq)
         if ip <= MAX_IPV4:
             self.v = 4
         else:
@@ -251,57 +265,67 @@ class IP(object):
         return ip
 
     def _dqtoi_ipv4(self, dq):
-        q = dq.split('.')
+        q = dq.split(".")
         q.reverse()
         if len(q) > 4:
-            raise ValueError('%s: IPv4 address invalid: '
-                             'more than 4 bytes' % dq)
+            raise ValueError("%s: IPv4 address invalid: " "more than 4 bytes" % dq)
         for x in q:
             if not 0 <= int(x) <= 255:
-                raise ValueError('%s: IPv4 address invalid: '
-                                 'bytes should be between 0 and 255' % dq)
+                raise ValueError(
+                    "%s: IPv4 address invalid: "
+                    "bytes should be between 0 and 255" % dq
+                )
         while len(q) < 4:
-            q.insert(1, '0')
+            q.insert(1, "0")
         self.v = 4
         return sum(int(byte) << 8 * index for index, byte in enumerate(q))
 
     def _dqtoi_ipv6(self, dq):
         # Split hextets
-        hx = dq.split(':')
-        if ':::' in dq:
+        hx = dq.split(":")
+        if ":::" in dq:
             raise ValueError("%s: IPv6 address can't contain :::" % dq)
         # Mixed address (or 4-in-6), ::ffff:192.0.2.42
-        if '.' in dq:
+        if "." in dq:
             col_ind = dq.rfind(":")
             ipv6part = dq[:col_ind] + ":0:0"
             return self._dqtoi_ipv6(ipv6part) + self._dqtoi(hx[-1])
         if len(hx) > 8:
-            raise ValueError('%s: IPv6 address with more than 8 hexlets' % dq)
+            raise ValueError("%s: IPv6 address with more than 8 hexlets" % dq)
         elif len(hx) < 8:
             # No :: in address
-            if '' not in hx:
-                raise ValueError('%s: IPv6 address invalid: '
-                                 'compressed format malformed' % dq)
-            elif not (dq.startswith('::') or dq.endswith('::')) and len([x for x in hx if x == '']) > 1:
-                raise ValueError('%s: IPv6 address invalid: '
-                                 'compressed format malformed' % dq)
-            ix = hx.index('')
-            px = len(hx[ix + 1:])
+            if "" not in hx:
+                raise ValueError(
+                    "%s: IPv6 address invalid: " "compressed format malformed" % dq
+                )
+            elif (
+                not (dq.startswith("::") or dq.endswith("::"))
+                and len([x for x in hx if x == ""]) > 1
+            ):
+                raise ValueError(
+                    "%s: IPv6 address invalid: " "compressed format malformed" % dq
+                )
+            ix = hx.index("")
+            px = len(hx[ix + 1 :])
             for x in range(ix + px + 1, 8):
-                hx.insert(ix, '0')
-        elif dq.endswith('::'):
+                hx.insert(ix, "0")
+        elif dq.endswith("::"):
             pass
-        elif '' in hx:
-            raise ValueError('%s: IPv6 address invalid: '
-                             'compressed format detected in full notation' % dq())
-        ip = ''
-        hx = [x == '' and '0' or x for x in hx]
+        elif "" in hx:
+            raise ValueError(
+                "%s: IPv6 address invalid: "
+                "compressed format detected in full notation" % dq()
+            )
+        ip = ""
+        hx = [x == "" and "0" or x for x in hx]
         for h in hx:
             if len(h) < 4:
-                h = '%04x' % int(h, 16)
-            if not 0 <= int(h, 16) <= 0xffff:
-                raise ValueError('%r: IPv6 address invalid: '
-                                 'hexlets should be between 0x0000 and 0xffff' % dq)
+                h = "%04x" % int(h, 16)
+            if not 0 <= int(h, 16) <= 0xFFFF:
+                raise ValueError(
+                    "%r: IPv6 address invalid: "
+                    "hexlets should be between 0x0000 and 0xffff" % dq
+                )
             ip += h
         self.v = 6
         return int(ip, 16)
@@ -309,15 +333,15 @@ class IP(object):
     def _itodq(self, n):
         """Convert long to dotquad or hextet."""
         if self.v == 4:
-            return '.'.join(map(str, [
-                (n >> 24) & 0xff,
-                (n >> 16) & 0xff,
-                (n >> 8) & 0xff,
-                n & 0xff,
-            ]))
+            return ".".join(
+                map(
+                    str,
+                    [(n >> 24) & 0xFF, (n >> 16) & 0xFF, (n >> 8) & 0xFF, n & 0xFF,],
+                )
+            )
         else:
-            n = '%032x' % n
-            return ':'.join(n[4 * x:4 * x + 4] for x in range(0, 8))
+            n = "%032x" % n
+            return ":".join(n[4 * x : 4 * x + 4] for x in range(0, 8))
 
     def __str__(self):
         """Return dotquad representation of the IP.
@@ -389,13 +413,13 @@ class IP(object):
     def __add__(self, offset):
         """Add numeric offset to the IP."""
         if not isinstance(offset, six.integer_types):
-            return ValueError('Value is not numeric')
+            return ValueError("Value is not numeric")
         return self.__class__(self.ip + offset, mask=self.mask, version=self.v)
 
     def __sub__(self, offset):
         """Substract numeric offset from the IP."""
         if not isinstance(offset, six.integer_types):
-            return ValueError('Value is not numeric')
+            return ValueError("Value is not numeric")
         return self.__class__(self.ip - offset, mask=self.mask, version=self.v)
 
     @staticmethod
@@ -441,37 +465,37 @@ class IP(object):
         fe80::
         """
         if self.v == 4:
-            quads = self.dq.split('.')
+            quads = self.dq.split(".")
             try:
-                zero = quads.index('0')
-                if zero == 1 and quads.index('0', zero + 1):
+                zero = quads.index("0")
+                if zero == 1 and quads.index("0", zero + 1):
                     quads.pop(zero)
                     quads.pop(zero)
-                    return '.'.join(quads)
+                    return ".".join(quads)
                 elif zero == 2:
                     quads.pop(zero)
-                    return '.'.join(quads)
+                    return ".".join(quads)
             except ValueError:  # No zeroes
                 pass
 
             return self.dq
         else:
-            quads = map(lambda q: '%x' % (int(q, 16)), self.dq.split(':'))
-            quadc = ':%s:' % (':'.join(quads),)
+            quads = map(lambda q: "%x" % (int(q, 16)), self.dq.split(":"))
+            quadc = ":%s:" % (":".join(quads),)
             zeros = [0, -1]
 
             # Find the largest group of zeros
-            for match in re.finditer(r'(:[:0]+)', quadc):
+            for match in re.finditer(r"(:[:0]+)", quadc):
                 count = len(match.group(1)) - 1
                 if count > zeros[0]:
                     zeros = [count, match.start(1)]
 
             count, where = zeros
             if count:
-                quadc = quadc[:where] + ':' + quadc[where + count:]
+                quadc = quadc[:where] + ":" + quadc[where + count :]
 
-            quadc = re.sub(r'((^:)|(:$))', '', quadc)
-            quadc = re.sub(r'((^:)|(:$))', '::', quadc)
+            quadc = re.sub(r"((^:)|(:$))", "", quadc)
+            quadc = re.sub(r"((^:)|(:$))", "::", quadc)
 
             return quadc
 
@@ -489,26 +513,28 @@ class IP(object):
         if self.v == 4:
             return self
         else:
-            if self.bin().startswith('0' * 96):
+            if self.bin().startswith("0" * 96):
                 return IP(int(self), version=4)
-            elif self.bin().startswith('0' * 80 + '1' * 16):
+            elif self.bin().startswith("0" * 80 + "1" * 16):
                 return IP(int(self) & MAX_IPV4, version=4)
             elif int(self) & BASE_6TO4:
                 return IP((int(self) - BASE_6TO4) >> 80, version=4)
             else:
-                return ValueError('%s: IPv6 address is not IPv4 compatible or mapped, '
-                                  'nor an 6-to-4 IP' % self.dq)
+                return ValueError(
+                    "%s: IPv6 address is not IPv4 compatible or mapped, "
+                    "nor an 6-to-4 IP" % self.dq
+                )
 
     @classmethod
     def from_bin(cls, value):
         """Initialize a new network from binary notation."""
-        value = value.lstrip('b')
+        value = value.lstrip("b")
         if len(value) == 32:
             return cls(int(value, 2))
         elif len(value) == 128:
             return cls(int(value, 2))
         else:
-            return ValueError('%r: invalid binary notation' % (value,))
+            return ValueError("%r: invalid binary notation" % (value,))
 
     @classmethod
     def from_hex(cls, value):
@@ -518,9 +544,9 @@ class IP(object):
         elif len(value) == 32:
             return cls(int(value, 16))
         else:
-            raise ValueError('%r: invalid hexadecimal notation' % (value,))
+            raise ValueError("%r: invalid hexadecimal notation" % (value,))
 
-    def to_ipv6(self, ip_type='6-to-4'):
+    def to_ipv6(self, ip_type="6-to-4"):
         """
         Convert (an IPv4) IP address to an IPv6 address.
 
@@ -534,14 +560,18 @@ class IP(object):
         >>> print(ip.to_ipv6('mapped'))
         0000:0000:0000:0000:0000:ffff:c000:022a
         """
-        assert ip_type in ['6-to-4', 'compat', 'mapped'], 'Conversion ip_type not supported'
+        assert ip_type in [
+            "6-to-4",
+            "compat",
+            "mapped",
+        ], "Conversion ip_type not supported"
         if self.v == 4:
-            if ip_type == '6-to-4':
+            if ip_type == "6-to-4":
                 return IP(BASE_6TO4 | int(self) << 80, version=6)
-            elif ip_type == 'compat':
+            elif ip_type == "compat":
                 return IP(int(self), version=6)
-            elif ip_type == 'mapped':
-                return IP(0xffff << 32 | int(self), version=6)
+            elif ip_type == "mapped":
+                return IP(0xFFFF << 32 | int(self), version=6)
         else:
             return self
 
@@ -557,16 +587,16 @@ class IP(object):
         0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.a.2.2.0.0.0.0.c.2.0.0.2.ip6.arpa
         """
         if self.v == 4:
-            return '.'.join(list(self.dq.split('.')[::-1]) + ['in-addr', 'arpa'])
+            return ".".join(list(self.dq.split(".")[::-1]) + ["in-addr", "arpa"])
         else:
-            return '.'.join(list(self.hex())[::-1] + ['ip6', 'arpa'])
+            return ".".join(list(self.hex())[::-1] + ["ip6", "arpa"])
 
     def to_tuple(self):
         """Used for comparisons."""
         return (self.dq, self.mask)
 
     def guess_network(self):
-        netmask = 0x100000000 - 2**(32-self.mask)
+        netmask = 0x100000000 - 2 ** (32 - self.mask)
         return Network(netmask & self.ip, mask=self.mask)
 
 
@@ -652,24 +682,26 @@ class Network(IP):
         if self.version() == 4:
             return self.network_long() | (MAX_IPV4 - self.netmask_long())
         else:
-            return self.network_long() \
-                | (MAX_IPV6 - self.netmask_long())
+            return self.network_long() | (MAX_IPV6 - self.netmask_long())
 
     def host_first(self):
         """First available host in this subnet."""
-        if (self.version() == 4 and self.mask > 30) or \
-                (self.version() == 6 and self.mask > 126):
+        if (self.version() == 4 and self.mask > 30) or (
+            self.version() == 6 and self.mask > 126
+        ):
             return self
         else:
             return IP(self.network_long() + 1, version=self.version())
 
     def host_last(self):
         """Last available host in this subnet."""
-        if (self.version() == 4 and self.mask == 32) or \
-                (self.version() == 6 and self.mask == 128):
+        if (self.version() == 4 and self.mask == 32) or (
+            self.version() == 6 and self.mask == 128
+        ):
             return self
-        elif (self.version() == 4 and self.mask == 31) or \
-                (self.version() == 6 and self.mask == 127):
+        elif (self.version() == 4 and self.mask == 31) or (
+            self.version() == 6 and self.mask == 127
+        ):
             return IP(int(self) + 1, version=self.version())
         else:
             return IP(self.broadcast_long() - 1, version=self.version())
@@ -677,8 +709,10 @@ class Network(IP):
     def check_collision(self, other):
         """Check another network against the given network."""
         other = Network(other)
-        return self.network_long() <= other.network_long() <= self.broadcast_long() or \
-            other.network_long() <= self.network_long() <= other.broadcast_long()
+        return (
+            self.network_long() <= other.network_long() <= self.broadcast_long()
+            or other.network_long() <= self.network_long() <= other.broadcast_long()
+        )
 
     def __str__(self):
         """
@@ -746,7 +780,7 @@ class Network(IP):
             return tuple(arr)
         else:
             if key >= self.size():
-                raise IndexError("Index out of range: %d > %d" % (key, self.size()-1))
+                raise IndexError("Index out of range: %d > %d" % (key, self.size() - 1))
             return IP(int(self) + (key + self.size()) % self.size(), mask=self.subnet())
 
     def __iter__(self):
@@ -793,36 +827,36 @@ class Network(IP):
         return self.size()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     tests = [
-        ('192.168.114.42', 23, ['192.168.0.1', '192.168.114.128', '10.0.0.1']),
-        ('123::', 128, ['123:456::', '::1', '123::456']),
-        ('::42', 64, ['::1', '1::']),
-        ('2001:dead:beef:1:c01d:c01a::', 48, ['2001:dead:beef:babe::']),
-        ('10.10.0.0', '255.255.255.0', ['10.10.0.20', '10.10.10.20']),
-        ('2001:dead:beef:1:c01d:c01a::', 'ffff:ffff:ffff::', ['2001:dead:beef:babe::']),
-        ('10.10.0.0/255.255.240.0', None, ['10.10.0.20', '10.10.250.0']),
+        ("192.168.114.42", 23, ["192.168.0.1", "192.168.114.128", "10.0.0.1"]),
+        ("123::", 128, ["123:456::", "::1", "123::456"]),
+        ("::42", 64, ["::1", "1::"]),
+        ("2001:dead:beef:1:c01d:c01a::", 48, ["2001:dead:beef:babe::"]),
+        ("10.10.0.0", "255.255.255.0", ["10.10.0.20", "10.10.10.20"]),
+        ("2001:dead:beef:1:c01d:c01a::", "ffff:ffff:ffff::", ["2001:dead:beef:babe::"]),
+        ("10.10.0.0/255.255.240.0", None, ["10.10.0.20", "10.10.250.0"]),
     ]
-#
+    #
     for address, netmask, test_ips in tests:
         net = Network(address, netmask)
-        print('===========')
-        print('ip address: {0}'.format(net))
-        print('to ipv6...: {0}'.format(net.to_ipv6()))
-        print('ip version: {0}'.format(net.version()))
-        print('ip info...: {0}'.format(net.info()))
-        print('subnet....: {0}'.format(net.subnet()))
-        print('num ip\'s.. {0}:'.format(net.size()))
-        print('integer...: {0}'.format(int(net)))
-        print('hex.......: {0}'.format(net.hex()))
-        print('netmask...: {0}'.format(net.netmask()))
+        print("===========")
+        print("ip address: {0}".format(net))
+        print("to ipv6...: {0}".format(net.to_ipv6()))
+        print("ip version: {0}".format(net.version()))
+        print("ip info...: {0}".format(net.info()))
+        print("subnet....: {0}".format(net.subnet()))
+        print("num ip's... {0}:".format(net.size()))
+        print("integer...: {0}".format(int(net)))
+        print("hex.......: {0}".format(net.hex()))
+        print("netmask...: {0}".format(net.netmask()))
         # Not implemented in IPv6
         if net.version() == 4:
-            print('network...: {0}'.format(net.network()))
-            print('broadcast.: {0}'.format(net.broadcast()))
-        print('first host: {0}'.format(net.host_first()))
-        print('reverse...: {0}'.format(net.host_first().to_reverse()))
-        print('last host.: {0}'.format(net.host_last()))
-        print('reverse...: {0}'.format(net.host_last().to_reverse()))
+            print("network...: {0}".format(net.network()))
+            print("broadcast.: {0}".format(net.broadcast()))
+        print("first host: {0}".format(net.host_first()))
+        print("reverse...: {0}".format(net.host_first().to_reverse()))
+        print("last host.: {0}".format(net.host_last()))
+        print("reverse...: {0}".format(net.host_last().to_reverse()))
         for test_ip in test_ips:
-            print('{0} in network: {1}'.format(test_ip, test_ip in net))
+            print("{0} in network: {1}".format(test_ip, test_ip in net))

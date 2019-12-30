@@ -18,8 +18,8 @@ import boto3
 import botocore.exceptions
 
 # Pull some config from env (supplied by AWS Lambda)
-AWS_REGION = os.environ['AWS_REGION']  # set by Lambda automatically
-SQS_QUEUE_NAME = os.environ['SQS_QUEUE_NAME']  # set in Lambda manually
+AWS_REGION = os.environ["AWS_REGION"]  # set by Lambda automatically
+SQS_QUEUE_NAME = os.environ["SQS_QUEUE_NAME"]  # set in Lambda manually
 
 # Set up some global constants
 MAX_MESSAGES = 10  # AWS global limit is 10, so let's get up to that amount
@@ -31,17 +31,19 @@ MAX_MESSAGE_RECEIVE_LOOPS = 30  # set a sane limit to prevent infinite loop
 logging.basicConfig()
 logging.getLogger().setLevel(logging.INFO)
 # Override default handler's format. AWS butchers it with useless info.
-logging.getLogger().handlers[0].setFormatter(logging.Formatter(
-    '%(levelname)s:%(name)s:%(message)s\r'))
+logging.getLogger().handlers[0].setFormatter(
+    logging.Formatter("%(levelname)s:%(name)s:%(message)s\r")
+)
 # Set up a local logger so we can log our own messages
 log = logging.getLogger(__name__)
 
 # Set up API objects at the module level. Lambda will reuse the runtime
 # envionments when possible, meaning the API connections will be reused.
 # https://docs.aws.amazon.com/lambda/latest/dg/running-lambda-code.html
-SQS_API = boto3.resource('sqs', region_name=AWS_REGION).get_queue_by_name(
-    QueueName=SQS_QUEUE_NAME)
-R53_API = boto3.client('route53', region_name=AWS_REGION)
+SQS_API = boto3.resource("sqs", region_name=AWS_REGION).get_queue_by_name(
+    QueueName=SQS_QUEUE_NAME
+)
+R53_API = boto3.client("route53", region_name=AWS_REGION)
 
 
 class ErrorSearchException(Exception):
@@ -52,6 +54,7 @@ class ErrorSearchException(Exception):
     this script was written (check the regex in
     DnsChangeQueue.remove_failed_record_change() for the expected format)
     """
+
     pass
 
 
@@ -88,7 +91,7 @@ class DnsChange(object):
         """
         # Init some useful class properties
         self._boto_message = boto_message
-        self.sent_timestamp = int(boto_message.attributes['SentTimestamp'])
+        self.sent_timestamp = int(boto_message.attributes["SentTimestamp"])
         self.receipt_handle = str(boto_message.receipt_handle)
 
         # Attributes to be set later
@@ -113,26 +116,32 @@ class DnsChange(object):
         try:
             self.message_body = json.loads(self._boto_message.body)
         except Exception as e:
-            log.error('Could not load SQS message body as JSON (%s)! ' +
-                      "Marking message as 'failed'. Message body is:\n" +
-                      str(self._boto_message.body), e)
+            log.error(
+                "Could not load SQS message body as JSON (%s)! "
+                + "Marking message as 'failed'. Message body is:\n"
+                + str(self._boto_message.body),
+                e,
+            )
             self.failed = True
             return
 
         # Attempt to load our attributes from the parsed JSON
         try:
-            self.domain = str(self.message_body['Domain']).lower()
-            self.action = str(self.message_body['Action']).upper()
-            self.record = str(self.message_body['Record']['Name']).lower()
-            self.record_type = str(self.message_body['Record']['Type']).upper()
-            self.ttl = int(self.message_body['Record']['TTL'])
+            self.domain = str(self.message_body["Domain"]).lower()
+            self.action = str(self.message_body["Action"]).upper()
+            self.record = str(self.message_body["Record"]["Name"]).lower()
+            self.record_type = str(self.message_body["Record"]["Type"]).upper()
+            self.ttl = int(self.message_body["Record"]["TTL"])
             self.targets = set()
-            for target in self.message_body['Record']['Targets']:
+            for target in self.message_body["Record"]["Targets"]:
                 self.targets.add(str(target).lower())
         except KeyError as e:
-            log.error('Could not load required attribute (%s) from message ' +
-                      "body! Marking message as 'failed'. Message body is:\n" +
-                      str(self.message_body), e)
+            log.error(
+                "Could not load required attribute (%s) from message "
+                + "body! Marking message as 'failed'. Message body is:\n"
+                + str(self.message_body),
+                e,
+            )
             self.failed = True
             return
 
@@ -167,24 +176,23 @@ class DnsChangeQueue(object):
             num_received_msgs = None
             receive_loops = 0
 
-            while (num_received_msgs != 0 and
-                   receive_loops <= MAX_MESSAGE_RECEIVE_LOOPS):
+            while num_received_msgs != 0 and receive_loops <= MAX_MESSAGE_RECEIVE_LOOPS:
                 receive_loops += 1
-                log.info('Starting receive_messages loop #%s', receive_loops)
+                log.info("Starting receive_messages loop #%s", receive_loops)
                 num_received_msgs = 0
 
                 messages_from_boto = self._sqs_api.receive_messages(
-                    AttributeNames=['SentTimestamp'],
+                    AttributeNames=["SentTimestamp"],
                     MaxNumberOfMessages=MAX_MESSAGES,
-                    WaitTimeSeconds=WAIT_TIME_SECONDS)
+                    WaitTimeSeconds=WAIT_TIME_SECONDS,
+                )
 
                 for boto_message in messages_from_boto:
                     self._messages.append(DnsChange(boto_message))
                     num_received_msgs += 1
-                log.info('Received %s messages from SQS', num_received_msgs)
+                log.info("Received %s messages from SQS", num_received_msgs)
 
-            log.info('Received a total of %s messages from SQS',
-                     len(self._messages))
+            log.info("Received a total of %s messages from SQS", len(self._messages))
 
         return self._messages
 
@@ -217,9 +225,9 @@ class DnsChangeQueue(object):
             # don't exist already
             for msg in self.messages:
                 if msg.failed is not True:
-                    self._record_changes.setdefault(
-                        msg.domain, {}).setdefault(
-                            msg.record, []).append(msg)
+                    self._record_changes.setdefault(msg.domain, {}).setdefault(
+                        msg.record, []
+                    ).append(msg)
 
         return self._record_changes
 
@@ -232,18 +240,25 @@ class DnsChangeQueue(object):
         the unused messages can be deleted later).
         """
         # Find all the records in the queue that have more than one change
-        log.info('Removing any duplicate changes')
+        log.info("Removing any duplicate changes")
         for domain in self.record_changes:
             for record in self.record_changes[domain]:
                 if len(self.record_changes[domain][record]) > 1:
 
                     # Sort the change list by timestamp, newest first
-                    records = sorted(self.record_changes[domain][record],
-                                     key=lambda r: r.sent_timestamp,
-                                     reverse=True)
-                    log.info(('Found %s change requests for %s. '
-                              'Using only the most recent one.'),
-                             len(records), record)
+                    records = sorted(
+                        self.record_changes[domain][record],
+                        key=lambda r: r.sent_timestamp,
+                        reverse=True,
+                    )
+                    log.info(
+                        (
+                            "Found %s change requests for %s. "
+                            "Using only the most recent one."
+                        ),
+                        len(records),
+                        record,
+                    )
 
                     # Keep only the newest change, marking the others as
                     # duplicates and removing them from the change list
@@ -265,12 +280,13 @@ class DnsChangeQueue(object):
             self._hosted_zones = dict()
 
             # For each hosted zone...
-            for zone in self._r53_api.list_hosted_zones_by_name(
-                    MaxItems='100')['HostedZones']:
+            for zone in self._r53_api.list_hosted_zones_by_name(MaxItems="100")[
+                "HostedZones"
+            ]:
                 # Cut off the trailing '.'
-                zone_name = '.'.join(zone['Name'].split('.')[:-1])
+                zone_name = ".".join(zone["Name"].split(".")[:-1])
                 # Get just the ID, not the full path
-                zone_id = zone['Id'].split('/')[-1:][0]
+                zone_id = zone["Id"].split("/")[-1:][0]
                 # Add to our dict
                 self._hosted_zones[zone_name] = zone_id
 
@@ -286,7 +302,7 @@ class DnsChangeQueue(object):
         Returns:
             list of dicts
         """
-        log.info('Generating Route53 ChangeBatch request for %s', domain)
+        log.info("Generating Route53 ChangeBatch request for %s", domain)
         changes = list()
 
         for record in self.record_changes[domain]:
@@ -300,23 +316,24 @@ class DnsChangeQueue(object):
 
             resource_records = list()
             for target in change.targets:
-                resource_records.append({'Value': target})
+                resource_records.append({"Value": target})
 
-            log.info('Adding change to request: %s -> %s',
-                     change.record, change.targets)
+            log.info(
+                "Adding change to request: %s -> %s", change.record, change.targets
+            )
             changes.append(
                 {
-                    'Action': change.action,
-                    'ResourceRecordSet': {
-                        'Name': change.record,
-                        'Type': change.record_type,
-                        'TTL': change.ttl,
-                        'ResourceRecords': resource_records
-                    }
+                    "Action": change.action,
+                    "ResourceRecordSet": {
+                        "Name": change.record,
+                        "Type": change.record_type,
+                        "TTL": change.ttl,
+                        "ResourceRecords": resource_records,
+                    },
                 }
             )
 
-        return {'Changes': changes}
+        return {"Changes": changes}
 
     def mark_failed_record_change(self, domain, error_msg):
         """
@@ -334,8 +351,7 @@ class DnsChangeQueue(object):
             # If it is, then it's very likely to be the record causing the
             # failure and it should be removed
             if record in error_msg:
-                log.error("Removing '%s' from change list and retrying",
-                          record)
+                log.error("Removing '%s' from change list and retrying", record)
                 for msg in self.record_changes[domain][record]:
                     msg.failed = True
 
@@ -350,34 +366,38 @@ class DnsChangeQueue(object):
 
                 # Build the changebatch fresh for each loop
                 changebatch = self.generate_r53_changebatch(domain)
-                log.info('Sending ChangeBatch request for %s', domain)
+                log.info("Sending ChangeBatch request for %s", domain)
 
                 try:
                     self._r53_api.change_resource_record_sets(
-                        HostedZoneId=self.hosted_zones[domain],
-                        ChangeBatch=changebatch)
+                        HostedZoneId=self.hosted_zones[domain], ChangeBatch=changebatch
+                    )
 
                 # If we get InvalidChangeBatch, try to remove the offending
                 # change, and restart the loop
                 except botocore.exceptions.ClientError as e:
-                    if e.response['Error']['Code'] == 'InvalidChangeBatch':
-                        log.error('Route53: %s', e.message)
+                    if e.response["Error"]["Code"] == "InvalidChangeBatch":
+                        log.error("Route53: %s", e.message)
                         self.mark_failed_record_change(
-                            domain, e.response['Error']['Message'])
+                            domain, e.response["Error"]["Message"]
+                        )
                         continue
                     else:
                         raise e
 
                 # If we run out of records to send, let's fail gracefully
                 except botocore.exceptions.ParamValidationError as e:
-                    if re.search(r'Invalid\slength', e.message) is not None:
-                        failed = set(msg.record for msg in self.messages if (
-                            msg.failed is True))
+                    if re.search(r"Invalid\slength", e.message) is not None:
+                        failed = set(
+                            msg.record for msg in self.messages if (msg.failed is True)
+                        )
                         log.critical(
-                            'No more non-failing changes to submit! ' +
-                            'For reference, the records that are unable to ' +
-                            'updated are:\n' + '\n'.join(failed) +
-                            '\nYou may want to process them manually.')
+                            "No more non-failing changes to submit! "
+                            + "For reference, the records that are unable to "
+                            + "updated are:\n"
+                            + "\n".join(failed)
+                            + "\nYou may want to process them manually."
+                        )
                         break
                     else:
                         raise e
@@ -393,11 +413,11 @@ class DnsChangeQueue(object):
         # processed)
         messages_to_delete = list()
         for message in self.messages:
-            if ((message.requested is True or message.duplicate is True) and
-                    (message.failed is False)):
+            if (message.requested is True or message.duplicate is True) and (
+                message.failed is False
+            ):
                 messages_to_delete.append(message)
-        log.info('Deleting %s messages (in batches of 10)',
-                 len(messages_to_delete))
+        log.info("Deleting %s messages (in batches of 10)", len(messages_to_delete))
 
         # Batch delete messages 10 at a time (max per the API), removing them
         # from the list of messages to delete
@@ -411,15 +431,16 @@ class DnsChangeQueue(object):
                 except IndexError:
                     break
                 else:
-                    entries.append({
-                        'Id': str(message_count),
-                        'ReceiptHandle': message.receipt_handle
-                    })
+                    entries.append(
+                        {
+                            "Id": str(message_count),
+                            "ReceiptHandle": message.receipt_handle,
+                        }
+                    )
                     message_count += 1
                     deleted_messages_count += 1
             self._sqs_api.delete_messages(Entries=entries)
-        log.info('Deleted %s messages from the SQS queue',
-                 deleted_messages_count)
+        log.info("Deleted %s messages from the SQS queue", deleted_messages_count)
 
 
 def lambda_handler(event, context):
